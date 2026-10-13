@@ -19,12 +19,37 @@
   <button id="btn-index" class="primary">Обновить индекс</button>
   <span class="indexnote" id="indexnote">—</span>
   <button id="btn-reindex" class="linklike" title="Заново посчитать все хеши и эмбеддинги">пересчитать всё заново</button>
-  <label>pHash
-    <input type="number" id="phash" min="0" max="20" step="1">
-  </label>
-  <label>cosine
-    <input type="number" id="cosine" min="0.5" max="1" step="0.01">
-  </label>
+  <div class="params">
+    <div class="param">
+      <span class="plabel">
+        <label for="phash">Похожесть кадра</label>
+        <span class="q" tabindex="0" role="button" aria-describedby="hint-phash">?</span>
+      </span>
+      <input type="number" id="phash" min="0" max="20" step="1">
+      <span class="hint" id="hint-phash">
+        Сравниваются сами снимки: где свет, где тень, что где расположено.
+        Цвет и резкость не важны.
+        <b>Меньше — строже.</b> Находятся только почти одинаковые кадры,
+        зато лишних предложений меньше.
+      </span>
+    </div>
+
+    <div class="param">
+      <span class="plabel">
+        <label for="cosine">Похожесть содержания</label>
+        <span class="q" tabindex="0" role="button" aria-describedby="hint-cosine">?</span>
+      </span>
+      <input type="number" id="cosine" min="0.5" max="1" step="0.01">
+      <span class="hint" id="hint-cosine">
+        Сравнивается, что изображено: та же сцена, тот же объект, то же место.
+        <b>Больше — строже.</b> Если не понимаете, зачем это менять,
+        оставьте 0.9.
+      </span>
+    </div>
+
+    <span class="params-note">Оба меняют строгость,
+      но в разные стороны</span>
+  </div>
   <span class="spacer"></span>
   <button id="btn-report" class="ghost">Отчёт</button>
   <button id="btn-reset" class="ghost">Снять все отметки</button>
