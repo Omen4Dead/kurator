@@ -34,7 +34,7 @@ Apache-2.0 на веса, MIT на код.
 ## Установка
 
 ```bash
-git clone https://github.com/<твой-аккаунт>/kurator
+git clone https://github.com/Omen4Dead/kurator.git
 cd kurator
 
 # окружение: uv + Python 3.11+
