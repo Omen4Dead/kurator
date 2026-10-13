@@ -103,7 +103,40 @@ def test_burst_groups_by_exif_window():
     groups = burst_groups(photos)
     assert len(groups) == 1
     assert groups[0].members == ["x.jpg", "y.jpg"]
-    assert "EXIF" in groups[0].detail["reason"]
+    assert "похожи" in groups[0].detail["reason"]
+
+
+def test_burst_needs_visual_similarity_not_only_time():
+    """Последовательная съёмка не должна прятаться за burst.
+
+    Два кадра подряд в паре секунд друг от друга — это обычная съёмка
+    сцены, а не серия. Без проверки похожести на настоящем архиве так
+    помечались две трети файлов.
+    """
+    photos = [
+        photo("a.jpg", md5="1", phash="0000000000000001", taken="2024-01-01T10:00:00"),
+        photo("b.jpg", md5="2", phash="ffffffffffffffff", taken="2024-01-01T10:00:02"),
+    ]
+    assert burst_groups(photos) == [], "кадры разные, а серия не должна из них вырасти"
+
+
+def test_burst_survives_when_looking_similar():
+    photos = [
+        photo("a.jpg", md5="1", phash="0000000000000001", taken="2024-01-01T10:00:00"),
+        photo("b.jpg", md5="2", phash="0000000000000003", taken="2024-01-01T10:00:01"),
+    ]
+    groups = burst_groups(photos)
+    assert len(groups) == 1, "похожие кадры подряд — это серия, её надо защитить"
+    assert groups[0].kind == BURST
+
+
+def test_burst_without_hashes_stays_protected():
+    """Видео остаётся защищённым: хешей нет, проверить похожесть нечем."""
+    photos = [
+        photo("v1.mov", md5="1", taken="2024-01-01T10:00:00", video=True),
+        photo("v2.mov", md5="2", taken="2024-01-01T10:00:01", video=True),
+    ]
+    assert len(burst_groups(photos)) == 1
 
 
 def test_burst_groups_exclude_outside_window():

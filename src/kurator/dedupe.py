@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import (
+    BURST_PHASH_DISTANCE,
     BURST_WINDOW_SECONDS,
     NEAR_DUP_COSINE_STRONG,
     NEAR_DUP_COSINE_WEAK,
@@ -194,7 +195,7 @@ def burst_groups(photos: list[Photo]) -> list[Group]:
 
     by_folder: dict[str, list[Photo]] = {}
     for photo in photos:
-        if photo.is_video or photo.rel_path in claimed:
+        if photo.rel_path in claimed:
             continue
         by_folder.setdefault(str(Path(photo.rel_path).parent), []).append(photo)
 
@@ -208,36 +209,83 @@ def burst_groups(photos: list[Photo]) -> list[Group]:
             except ValueError:
                 continue
         stamped.sort(key=lambda pair: pair[0])
-
-        used: set[str] = set()
-        for i, (moment, photo) in enumerate(stamped):
-            if photo.rel_path in used:
-                continue
-            window = []
-            for other_moment, other in stamped[i + 1 :]:
-                delta = (other_moment - moment).total_seconds()
-                if delta > BURST_WINDOW_SECONDS:
-                    break
-                window.append(other.rel_path)
-            if not window:
-                continue
-            members = _drop_identical(sorted([photo.rel_path, *window]), by_path)
-            if len(members) < 2:
-                continue
-            groups.append(
-                Group(
-                    kind=BURST,
-                    members=members,
-                    detail={
-                        "reason": f"EXIF в пределах {BURST_WINDOW_SECONDS:g} с",
-                        "folder": folder,
-                        "anchor": photo.rel_path,
-                    },
-                )
-            )
-            used.update(members)
+        for group in _burst_by_time_and_look(stamped, by_path):
+            group.detail["folder"] = folder
+            groups.append(group)
 
     return groups
+
+
+def _looks_like_same_moment(left: Photo, right: Photo) -> bool:
+    """Серия снимается залпом: кадры рядом по времени И похожи между собой.
+
+    Одного времени мало. Если снять сцену последовательно, кадры тоже
+    окажутся в паре секунд друг от друга, и без этой проверки две трети
+    архива окажутся защищены от разбора.
+
+    Если хешей нет (видео), защиту оставляем: на всякий случай.
+    """
+    if not left.phash or not right.phash:
+        return True
+    distance = hamming_many(
+        np.array([left.phash_int], dtype=np.uint64),
+        np.array([right.phash_int], dtype=np.uint64),
+    )
+    return int(distance.reshape(-1)[0]) <= BURST_PHASH_DISTANCE
+
+
+def _burst_by_time_and_look(
+    stamped: list[tuple[dt.datetime, Photo]],
+    by_path: dict[str, Photo],
+) -> list[Group]:
+    parent: dict[str, str] = {}
+
+    def find(rel: str) -> str:
+        while parent[rel] != rel:
+            parent[rel] = parent[parent[rel]]
+            rel = parent[rel]
+        return rel
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if ra < rb:
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+
+    for index, (moment, photo) in enumerate(stamped):
+        parent.setdefault(photo.rel_path, photo.rel_path)
+        for other_moment, other in stamped[index + 1 :]:
+            if (other_moment - moment).total_seconds() > BURST_WINDOW_SECONDS:
+                break
+            parent.setdefault(other.rel_path, other.rel_path)
+            if _looks_like_same_moment(photo, other):
+                union(photo.rel_path, other.rel_path)
+
+    buckets: dict[str, list[str]] = {}
+    for rel in parent:
+        buckets.setdefault(find(rel), []).append(rel)
+
+    out: list[Group] = []
+    for members in buckets.values():
+        if len(members) < 2:
+            continue
+        kept = _drop_identical(sorted(members), by_path)
+        if len(kept) < 2:
+            continue
+        out.append(
+            Group(
+                kind=BURST,
+                members=kept,
+                keeper=None,
+                detail={
+                    "reason": f"снято подряд и кадры похожи, ≤ {BURST_WINDOW_SECONDS:g} с",
+                },
+            )
+        )
+    return out
 
 
 def burst_members(photos: list[Photo]) -> set[str]:
