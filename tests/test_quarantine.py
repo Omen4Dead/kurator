@@ -200,3 +200,16 @@ def test_blocked_roots_are_rejected():
 
     assert too_broad(Path("/")) is True
     assert too_broad(Path("/System")) is True
+
+
+def test_dry_run_writes_nothing(tmp_path):
+    """Пробный прогон не должен оставлять следов в папке карантина."""
+    make_store(tmp_path)
+    store = Store.open(tmp_path)
+
+    moves = plan_moves(tmp_path, ["b.txt"])
+    apply_moves(store, moves, kind="exact", dry_run=True)
+
+    assert not quarantine_root(tmp_path).exists(), "dry-run создал каталог карантина"
+    assert (tmp_path / "b.txt").exists()
+    store.close()

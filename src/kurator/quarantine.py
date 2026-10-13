@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import secrets
 import shutil
 import sqlite3
 import time
@@ -50,19 +51,37 @@ def plan_moves(root: Path, rel_paths: list[str]) -> list[Move]:
 
 def apply_moves(store: Store, moves: list[Move], kind: str, dry_run: bool) -> dict:
     root = store.root
+    planned_bytes = sum(move.src.stat().st_size for move in moves if move.src.exists())
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "count": len(moves),
+            "bytes": planned_bytes,
+            "manifest": None,
+            "run_id": None,
+            "paths": [str(m.src.relative_to(root)) for m in moves],
+            "sample": [
+                {
+                    "from": str(m.src.relative_to(root)),
+                    "to": str(m.dst.relative_to(root)),
+                }
+                for m in moves
+            ],
+        }
+
     payload = {
         "kind": kind,
         "root": str(root),
         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
         "count": len(moves),
-        "bytes": sum(move.src.stat().st_size for move in moves if move.src.exists()),
+        "bytes": planned_bytes,
         "moves": [m.as_dict(root) for m in moves],
     }
+    unique = f"{int(time.time() * 1000)}_{secrets.token_hex(3)}"
     manifest = store.write_json(
-        f"{QUARANTINE_DIRNAME}/manifest_{kind}_{int(time.time() * 1000)}.json", payload
+        f"{QUARANTINE_DIRNAME}/manifest_{kind}_{unique}.json", payload
     )
-    if dry_run:
-        return {"dry_run": True, "count": len(moves), "manifest": str(manifest), "run_id": None}
 
     done: list[dict] = []
     failed: list[dict] = []
