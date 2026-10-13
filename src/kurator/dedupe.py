@@ -89,8 +89,12 @@ def near_groups(
         for r, c in zip(rows.tolist(), cols.tolist()):
             i = start + r
             j = c
-            if i < j:
-                pairs.append((i, j, int(dist[r, c])))
+            if i >= j:
+                continue
+            left, right = candidates[i], candidates[j]
+            if left.md5 and left.md5 == right.md5:
+                continue
+            pairs.append((i, j, int(dist[r, c])))
 
     vectors = None
     positions: dict[str, int] = {}
@@ -294,6 +298,60 @@ def calibration(
         "phash_pairs": phash_counts,
         "cosine_pairs": cosine_counts,
     }
+
+
+def apply_burst_protection(
+    groups: list[Group],
+    photos: list[Photo],
+    include_burst: bool = True,
+) -> tuple[list[Group], set[str]]:
+    """Убирает из групп-дублей всё, что относится к burst-сериям.
+
+    Единая точка правды: и dups, и report, и apply, и веб-интерфейс
+    обязаны считать кандидатов именно так, иначе они разойдутся.
+    """
+    protected = burst_members(photos)
+    kept: list[Group] = []
+    for group in groups:
+        members = [rel for rel in group.members if rel not in protected]
+        if len(members) < 2:
+            continue
+        kept.append(
+            Group(kind=group.kind, members=sorted(members), keeper=group.keeper, detail=group.detail)
+        )
+    if include_burst:
+        kept += burst_groups(photos)
+    return kept, protected
+
+
+def analyze(
+    photos: list[Photo],
+    store: Store | None = None,
+    phash_distance: int = NEAR_DUP_PHASH_DISTANCE,
+    strong_cosine: float = NEAR_DUP_COSINE_STRONG,
+    include_burst: bool = True,
+) -> tuple[list[Group], set[str]]:
+    """Полный разбор фотопарки. Единая точка входа для всех команд."""
+    groups = exact_groups(photos) + near_groups(
+        photos,
+        phash_distance,
+        store,
+        strong_cosine=strong_cosine,
+        weak_cosine=max(0.0, strong_cosine - 0.15),
+    )
+    protected = burst_members(photos)
+    kept: list[Group] = []
+    for group in groups:
+        members = [rel for rel in group.members if rel not in protected]
+        if len(members) < 2:
+            continue
+        kept.append(
+            Group(kind=group.kind, members=sorted(members), keeper=None, detail=group.detail)
+        )
+    if include_burst:
+        kept += burst_groups(photos)
+    choose_keepers(kept, photos)
+    return kept, protected
 
 
 def summarize(groups: list[Group]) -> dict[str, int]:

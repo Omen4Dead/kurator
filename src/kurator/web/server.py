@@ -113,23 +113,19 @@ class State:
         return candidate
 
 
-def _groups_for(state: State, phash: int, cosine: float) -> tuple[list, list]:
+def _groups_for(state: State, phash: int, cosine: float):
     from ..cluster import cluster_paths
-    from ..dedupe import burst_groups, burst_members, choose_keepers, exact_groups, near_groups
+    from ..dedupe import analyze
 
     photos = state.store.photos()
     index = {p.rel_path: p for p in photos}
-    groups = exact_groups(photos) + near_groups(
-        photos, phash, state.store, strong_cosine=cosine, weak_cosine=cosine - 0.15
+    groups, _ = analyze(
+        photos,
+        state.store,
+        phash_distance=phash,
+        strong_cosine=cosine,
+        include_burst=True,
     )
-    protected = burst_members(photos)
-    for group in groups:
-        group.members = [m for m in group.members if m not in protected]
-        group.members = [m for m in group.members if m in index]
-        if len(group.members) < 2:
-            group.members = []
-    groups = [g for g in groups if g.size >= 2]
-    choose_keepers(groups, photos)
 
     _, paths, vectors = state.store.embeddings()
     clusters: list[list[str]] = []

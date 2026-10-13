@@ -47,16 +47,17 @@ class Tuning:
 
 
 def _collect_groups(store: Store, include_burst: bool = True, tuning: Tuning | None = None):
-    from .dedupe import burst_groups, choose_keepers, exact_groups, near_groups
+    from .dedupe import analyze
 
     t = tuning or Tuning(NEAR_DUP_PHASH_DISTANCE, NEAR_DUP_COSINE_STRONG)
     photos = store.photos()
-    groups = exact_groups(photos) + near_groups(
-        photos, t.phash, store, strong_cosine=t.cosine, weak_cosine=t.cosine - 0.15
+    groups, _ = analyze(
+        photos,
+        store,
+        phash_distance=t.phash,
+        strong_cosine=t.cosine,
+        include_burst=include_burst,
     )
-    if include_burst:
-        groups += burst_groups(photos)
-    choose_keepers(groups, photos)
     return photos, groups
 
 
@@ -254,6 +255,52 @@ def cmd_clusters(args) -> int:
     return 0
 
 
+def cmd_evaluate(args) -> int:
+    root = Path(args.root).expanduser().resolve()
+    store = _open_store(root)
+    from .evaluate import evaluate, sweep
+
+    if args.sweep:
+        rows = sweep(root, store)
+        print(f"{'pHash':>6} {'cosine':>7} {'TP':>4} {'FP':>4} {'FN':>4} {'prec':>7} {'recall':>7} {'F1':>7} {'burst-в-карантине':>18}")
+        for row in rows:
+            near, safe = row["near"], row["safe"]
+            flag = "" if safe["fp"] == 0 else f"  ⚠ {safe['fp']}"
+            print(
+                f"{row['phash']:>6} {row['cosine']:>7.2f} {near['tp']:>4} {near['fp']:>4} {near['fn']:>4} "
+                f"{near['precision']:>7.3f} {near['recall']:>7.3f} {near['f1']:>7.3f} "
+                f"{safe['fp']:>18}{flag}"
+            )
+        print("\nстроки без ⚠ — ни один burst-кадр не попадает в карантин")
+        store.close()
+        return 0
+
+    result = evaluate(root, store, args.phash, args.cosine)
+    stats = result["stats"]
+    print(f"корень: {root}")
+    print(f"размечено файлов: {stats['scored']} "
+          f"(оригиналов {stats['orig']}, exact {stats['exact']}, near {stats['near']}, burst {stats['burst']})")
+    print()
+    print(f"{'метрика':<52} {'TP':>4} {'FP':>4} {'FN':>4} {'prec':>7} {'recall':>7} {'F1':>7}")
+    for metric in result["metrics"]:
+        d = metric.as_dict()
+        name = metric.label[:52]
+        print(f"{name:<52} {d['tp']:>4} {d['fp']:>4} {d['fn']:>4} "
+              f"{d['precision']:>7.3f} {d['recall']:>7.3f} {d['f1']:>7.3f}")
+    print()
+    print(f"кандидатов в карантин: {stats['quarantinable']} на {_fmt_bytes(stats['reclaimable_bytes'])}")
+
+    notes = [n for m in result["metrics"] for n in m.notes]
+    if notes and args.notes:
+        print(f"\nподробности ({len(notes)}):")
+        for note in notes[: args.notes]:
+            print(f"  {note}")
+    elif notes:
+        print(f"\nрасхождений: {len(notes)} (показать: --notes)")
+    store.close()
+    return 0
+
+
 def cmd_ui(args) -> int:
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
@@ -324,25 +371,29 @@ def cmd_report(args) -> int:
     return 0
 
 
+def _collect_groups_protected(store: Store, tuning: Tuning | None = None):
+    from .dedupe import analyze
+
+    t = tuning or Tuning(NEAR_DUP_PHASH_DISTANCE, NEAR_DUP_COSINE_STRONG)
+    photos = store.photos()
+    groups, protected = analyze(
+        photos, store, phash_distance=t.phash, strong_cosine=t.cosine, include_burst=True
+    )
+    return photos, groups, protected
+
+
 def cmd_apply(args) -> int:
     root = Path(args.root).expanduser().resolve()
     store = _open_store(root)
-    from .dedupe import burst_members
     from .quarantine import apply_moves, plan_moves
 
     wanted = {k.strip() for k in args.kind.split(",") if k.strip()}
-    photos, groups = _collect_groups(
-        store, include_burst=False, tuning=Tuning(args.phash, args.cosine)
+    photos, groups, protected = _collect_groups_protected(
+        store, tuning=Tuning(args.phash, args.cosine)
     )
-    protected = burst_members(photos)
     selected: list[Group] = [g for g in groups if g.kind in wanted]
-    victims: list[str] = []
-    for group in selected:
-        victims.extend(group.victims())
-    victims = sorted(set(victims))
-
+    victims = sorted({rel for g in selected for rel in g.victims()})
     skipped = [rel for rel in victims if rel in protected]
-    victims = [rel for rel in victims if rel not in protected]
 
     if not victims:
         print("нечего переносить")
@@ -448,6 +499,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=20, help="сколько кластеров показать")
     p.add_argument("--preview", type=int, default=8, help="сколько файлов на кластер")
     p.set_defaults(func=cmd_clusters)
+
+    p = sub.add_parser("evaluate", help="замерить точность дедупа против эталонной разметки")
+    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("--sweep", action="store_true", help="перебрать пороги в таблице")
+    p.add_argument("--notes", type=int, default=20, help="сколько расхождений показать")
+    _add_tuning_flags(p)
+    p.set_defaults(func=cmd_evaluate)
 
     p = sub.add_parser("ui", help="локальный веб-интерфейс в браузере")
     p.add_argument("root", nargs="?", default=".", help="корень фотопарки")

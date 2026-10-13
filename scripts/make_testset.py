@@ -10,6 +10,7 @@ JPEG и ресайзом, burst-серии с суффиксами (N), разн
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 import os
 import random
@@ -266,6 +267,7 @@ def build(out: Path, scenes: int) -> dict:
     rng = random.Random(7)
     base_time = dt.datetime(2024, 3, 10, 9, 0, 0)
     originals: list[tuple[Path, int, int, dt.datetime]] = []
+    truth: dict[str, dict] = {}
 
     for i in range(scenes):
         style = i % len(STYLES)
@@ -276,6 +278,13 @@ def build(out: Path, scenes: int) -> dict:
         path = folder / f"IMG_{moment.strftime('%Y%m%d_%H%M%S')}.jpg"
         write(path, scene(seed, style), moment, exif=True, quality=rng.randint(80, 95))
         originals.append((path, seed, style, moment))
+        truth[path.name] = {
+            "rel": str(path.relative_to(out)),
+            "scene": seed,
+            "style": STYLES[style].__name__,
+            "kind": "original",
+            "derived_from": None,
+        }
         counts["сцен"] += 1
 
     for index, (source, seed, style, moment) in enumerate(originals):
@@ -287,6 +296,13 @@ def build(out: Path, scenes: int) -> dict:
                 shutil.copy2(source, clash)
                 stamp = (moment + dt.timedelta(minutes=2)).timestamp()
                 os.utime(clash, (stamp, stamp))
+                truth[clash.name] = {
+                    "rel": str(clash.relative_to(out)),
+                    "scene": seed,
+                    "style": STYLES[style].__name__,
+                    "kind": "exact-dup",
+                    "derived_from": source.name,
+                }
                 counts["точные дубли"] += 1
         elif roll < 0.14:
             img = Image.open(source)
@@ -296,6 +312,13 @@ def build(out: Path, scenes: int) -> dict:
             write(target, resized, moment + dt.timedelta(minutes=6), exif=False,
                   quality=rng.choice([38, 52, 66, 80]))
             img.close()
+            truth[target.name] = {
+                "rel": str(target.relative_to(out)),
+                "scene": seed,
+                "style": STYLES[style].__name__,
+                "kind": "near-dup",
+                "derived_from": source.name,
+            }
             counts["near-дубли"] += 1
         elif roll < 0.21:
             frames = rng.randint(2, 4)
@@ -310,6 +333,13 @@ def build(out: Path, scenes: int) -> dict:
                 target = folder / f"BURST_{moment.strftime('%Y%m%d_%H%M%S')} ({frame}).jpg"
                 write(target, img, moment + dt.timedelta(milliseconds=frame * 350),
                       exif=True, quality=90)
+                truth[target.name] = {
+                    "rel": str(target.relative_to(out)),
+                    "scene": seed,
+                    "style": STYLES[style].__name__,
+                    "kind": "burst",
+                    "derived_from": source.name,
+                }
                 counts["burst-кадры"] += 1
 
     (out / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
@@ -322,6 +352,10 @@ def build(out: Path, scenes: int) -> dict:
     write(hidden / "cache.jpg", scene(999, 8), base_time, exif=False, quality=70)
     counts["мусор"] += 6
 
+    (out / "ground_truth.json").write_text(
+        json.dumps(truth, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
     return counts
 
 
@@ -332,6 +366,7 @@ def main() -> int:
     total = sum(1 for p in out.rglob("*") if p.is_file())
     print(f"набор готов: {out}")
     print(f"  файлов всего   : {total}")
+    print(f"  ground truth    : {out / 'ground_truth.json'}")
     for key, value in counts.items():
         print(f"  {key:<15}: {value}")
     return 0

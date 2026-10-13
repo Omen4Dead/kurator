@@ -4,6 +4,7 @@ from kurator.db import Photo
 from kurator.dedupe import (
     BURST,
     EXACT,
+    analyze,
     burst_groups,
     burst_members,
     choose_keepers,
@@ -153,3 +154,31 @@ def test_summarize_counts_kinds():
     ]
     counts = summarize(exact_groups(photos) + burst_groups(photos))
     assert counts == {EXACT: 1, BURST: 1}
+
+def test_near_groups_skip_byte_identical_pairs():
+    """Побайтно одинаковые файлы — забота exact, второй раз их реп��ртить нельзя."""
+    photos = [
+        photo("a.jpg", md5="same", phash="0000000000000001"),
+        photo("b.jpg", md5="same", phash="0000000000000001"),
+    ]
+    assert near_groups(photos, distance=2, store=None) == []
+
+
+def test_near_groups_keep_different_bytes_with_same_hash():
+    photos = [
+        photo("a.jpg", md5="one", phash="0000000000000001"),
+        photo("b.jpg", md5="two", phash="0000000000000003"),
+    ]
+    assert len(near_groups(photos, distance=2, store=None)) == 1
+
+
+def test_analyze_protects_burst_members():
+    photos = [
+        photo("A.jpg", md5="a", phash="0000000000000001", taken="2024-01-01T10:00:00"),
+        photo("A (1).jpg", md5="b", phash="0000000000000001", taken="2024-01-01T10:00:00"),
+    ]
+    groups, protected = analyze(photos, store=None, phash_distance=2, strong_cosine=0.5)
+    kinds = {g.kind for g in groups}
+    assert BURST in kinds
+    assert not {KIND for KIND in kinds if KIND != BURST}
+    assert protected == {"A.jpg", "A (1).jpg"}
