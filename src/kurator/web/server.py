@@ -420,6 +420,12 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if route == "/api/runs":
+            from ..quarantine import list_runs
+
+            self._json({"runs": list_runs(self.state.store)})
+            return
+
         if route == "/api/roots":
             self._json({"suggestions": candidate_roots(), "current": str(self.state.root)})
             return
@@ -515,12 +521,6 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/index":
             job = _start_index(self.state, rehash=bool(body.get("rehash")))
             self._json(job)
-            return
-
-        if route == "/api/runs":
-            from ..quarantine import list_runs
-
-            self._json({"runs": list_runs(self.state.store)})
             return
 
         if route == "/api/restore":

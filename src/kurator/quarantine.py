@@ -140,16 +140,21 @@ def list_runs(store: Store, limit: int = 20) -> list[dict]:
         manifest = Path(row["manifest"])
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
-            count = len(payload.get("moves", []))
         except (OSError, json.JSONDecodeError):
-            count = 0
+            continue
+        root = Path(payload.get("root", ""))
+        moves = payload.get("moves", [])
+        alive = [m for m in moves if (root / m.get("to", "")).is_file()]
+        if not alive:
+            continue
         out.append({
             "run_id": row["id"],
             "kind": row["kind"],
-            "count": count,
+            "count": len(alive),
             "bytes": payload.get("bytes", 0),
             "started_at": row["started_at"],
-            "paths": [m["from"] for m in payload.get("moves", [])] if count else [],
+            "paths": [m["from"] for m in alive],
+            "lost": len(moves) - len(alive),
         })
     return out
 

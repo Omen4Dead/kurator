@@ -268,3 +268,53 @@ def test_undo_one_group_keeps_other_quarantined_files(tmp_path):
         "b1.jpg", "b2.jpg"
     ], "чужие файлы карантина обязаны уцелеть"
     store.close()
+
+
+def test_list_runs_hides_runs_whose_files_are_gone(tmp_path):
+    """Полосы карантина не должны показывать переносы без файлов.
+
+    Регрессия: если файл карантина исчез (старый откат его удалил),
+    в UI оставалась полоса, на которой «Вернуть» падал с ошибкой.
+    """
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, list_runs, plan_moves
+
+    store = Store.open(tmp_path)
+    for name in ("a.jpg", "b.jpg"):
+        p = tmp_path / name
+        p.write_bytes(name.encode())
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+
+    apply_moves(store, plan_moves(tmp_path, ["a.jpg"]), kind="by-hand", dry_run=False)
+    apply_moves(store, plan_moves(tmp_path, ["b.jpg"]), kind="by-hand", dry_run=False)
+
+    assert len(list_runs(store)) == 2
+
+    next(quarantine_root(tmp_path).rglob("b.jpg")).unlink()
+    runs = list_runs(store)
+
+    assert [r["count"] for r in runs] == [1], "остаться должна только живая полоса"
+    assert all(r["paths"] != ["b.jpg"] for r in runs)
+    store.close()
+
+
+def test_list_runs_survives_broken_manifest(tmp_path):
+    """Битый или удалённый манифест не должен ронять весь список."""
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, list_runs, plan_moves
+
+    store = Store.open(tmp_path)
+    p = tmp_path / "a.jpg"
+    p.write_bytes(b"a")
+    info = p.stat()
+    store.upsert(Photo(rel_path="a.jpg", size=info.st_size, mtime=info.st_mtime, md5="a"))
+    store.commit()
+
+    apply_moves(store, plan_moves(tmp_path, ["a.jpg"]), kind="by-hand", dry_run=False)
+    row = store.query("SELECT manifest FROM runs ORDER BY id DESC LIMIT 1")[0]["manifest"]
+    Path(row).write_text("{не json", encoding="utf-8")
+
+    assert list_runs(store) == []
+    store.close()

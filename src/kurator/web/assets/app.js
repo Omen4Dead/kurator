@@ -244,12 +244,16 @@ function groupCard(group, index) {
 
 function render() {
   const main = $("main");
+  const hidden = state.skipped || {};
+  const stripHtml = state.strips.map(stripCard).join("");
+  const top = stripHtml ? `<div class="strips">${stripHtml}</div>` : "";
+
   if (state.tab === "clusters") {
     if (!state.clusters.length) {
-      main.innerHTML = `<p class="empty">Кластеров нет. Понизь порог cosine или проиндексируй больше.</p>`;
+      main.innerHTML = top + `<p class="empty">Кластеров нет. Понизь порог cosine или проиндексируй больше.</p>`;
       return;
     }
-    main.innerHTML = state.clusters.map((cluster, i) => `<div class="card">
+    main.innerHTML = top + state.clusters.map((cluster, i) => `<div class="card">
         <h3>${i + 1}. кластер <span class="badge">${cluster.size} файла(ов)</span></h3>
         <p class="meta">${escapeHtml(cluster.members[0].split("/").slice(0, -1).join("/"))}</p>
         <div class="grid">${cluster.members.map((m) =>
@@ -261,18 +265,16 @@ function render() {
 
   const groups = state.groups.filter((g) => g.kind === state.tab);
   if (!groups.length) {
-    main.innerHTML = `<p class="empty">Здесь пусто. Проверь индекс, другую вкладку или нажми «Снять все отметки».</p>`;
+    main.innerHTML = top + `<p class="empty">Здесь пусто. Проверь индекс, другую вкладку или нажми «Снять все отметки».</p>`;
     return;
   }
   const total = groups.reduce((sum, g) =>
     sum + g.files.filter((f) => isSelected(g).includes(f.path)).reduce((s, f) => s + f.size, 0), 0);
-  const hidden = state.skipped || {};
-  const strips = state.strips.map(stripCard).join("");
   const cards = groups.map((g, i) => {
     const sig = groupKeyOf(g);
     return hidden[sig] !== undefined ? skipStrip(g, hidden[sig]) : groupCard(g, i);
   });
-  main.innerHTML = (strips ? `<div class="strips">${strips}</div>` : "") +
+  main.innerHTML = top +
     `<p class="meta">${groups.length} групп · отмечено на ${fmtBytes(total)}.
     Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить
     другой кадр вместо отмеченного, снимите ✓ здесь и поставьте там.</p>` +
