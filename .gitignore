@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# локальное состояние: БД индексов и скачанные веса
+.kurator/
+models/
+out/
+report/
+
+.DS_Store

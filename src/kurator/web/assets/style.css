@@ -1,0 +1,58 @@
+:root { color-scheme: dark; --bg:#18181b; --panel:#1f1f23; --line:#2f2f36; --fg:#e4e4e7; --muted:#a1a1aa; --keep:#facc15; --drop:#fca5a5; --accent:#60a5fa; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+header { display:flex; align-items:baseline; gap:18px; padding:16px 24px; border-bottom:1px solid var(--line); }
+.brand { display:flex; align-items:baseline; gap:12px; }
+.logo { font-size:20px; font-weight:600; letter-spacing:-.3px; }
+.root { color:var(--muted); font-size:13px; }
+.stats { margin-left:auto; color:var(--muted); font-size:13px; }
+.bar { display:flex; align-items:center; gap:10px; padding:12px 24px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.bar label { color:var(--muted); font-size:13px; display:flex; align-items:center; gap:6px; }
+.bar input { width:78px; }
+.spacer { flex:1; }
+button { font:inherit; border-radius:8px; border:1px solid var(--line); background:var(--panel);
+  color:var(--fg); padding:7px 13px; cursor:pointer; }
+button:hover:not(:disabled) { border-color:#4b4b55; }
+button:disabled { opacity:.45; cursor:not-allowed; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#0b1220; font-weight:600; }
+button.danger { background:#7f1d1d; border-color:#7f1d1d; color:#fee2e2; }
+button.ghost { background:transparent; }
+input { font:inherit; background:#101013; color:var(--fg); border:1px solid var(--line);
+  border-radius:6px; padding:5px 8px; }
+.progress { display:flex; align-items:center; gap:12px; padding:8px 24px; border-bottom:1px solid var(--line); position:relative; }
+.progress .fill { position:absolute; inset:0 auto 0 0; background:#1e3a5f; opacity:.5; transition:width .25s; }
+.progress span { position:relative; font-size:13px; color:var(--muted); }
+.tabs { display:flex; gap:4px; padding:14px 24px 0; }
+.tabs button { background:transparent; border:none; border-bottom:2px solid transparent; border-radius:0; color:var(--muted); padding:7px 12px; }
+.tabs button.active { color:var(--fg); border-bottom-color:var(--accent); }
+main { padding:18px 24px 60px; }
+.empty { color:var(--muted); }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:16px; }
+.card h3 { margin:0 0 4px; font-size:15px; }
+.meta { color:var(--muted); font-size:13px; margin:0 0 12px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+.tile { background:#101013; border:2px solid var(--line); border-radius:8px; padding:6px; }
+.tile.keeper { border-color:var(--keep); }
+.tile img { width:100%; height:120px; object-fit:cover; border-radius:4px; display:block; background:#000; }
+.tile .name { font-size:11px; margin-top:6px; word-break:break-all; color:var(--muted); line-height:1.3; }
+.tile.keeper .name { color:var(--fg); }
+.tile .role { font-size:11px; margin-top:3px; }
+.tile.keeper .role { color:var(--keep); }
+.tile .role.victim { color:var(--drop); }
+.badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
+  background:#27272a; color:var(--muted); margin-left:8px; }
+dialog { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:14px;
+  max-width:min(760px,92vw); padding:20px; }
+dialog::backdrop { background:rgba(0,0,0,.6); }
+dialog h2 { margin:0 0 6px; font-size:18px; }
+.muted { color:var(--muted); font-size:13px; }
+#plan-list { max-height:45vh; overflow:auto; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:12px; background:#101013; border-radius:8px; padding:10px 12px; margin:12px 0; }
+.dialog-actions { display:flex; justify-content:flex-end; gap:10px; }
+#toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+  background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 16px;
+  opacity:0; pointer-events:none; transition:opacity .2s; max-width:80vw; }
+#toast.show { opacity:1; }
+#toast.bad { border-color:#7f1d1d; }
+code { background:#27272a; padding:1px 5px; border-radius:4px; font-size:12px; }

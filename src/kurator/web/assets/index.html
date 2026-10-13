@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kurator</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">kurator</span>
+    <span class="root" id="root">…</span>
+  </div>
+  <div class="stats" id="stats">загружаю…</div>
+</header>
+
+<section class="bar">
+  <button id="btn-index" class="primary">Проиндексировать</button>
+  <button id="btn-reindex" class="ghost">Пересчитать всё</button>
+  <label>pHash
+    <input type="number" id="phash" min="0" max="20" step="1">
+  </label>
+  <label>cosine
+    <input type="number" id="cosine" min="0.5" max="1" step="0.01">
+  </label>
+  <button id="btn-refresh" class="ghost">Пересчитать находки</button>
+  <span class="spacer"></span>
+  <button id="btn-report" class="ghost">Отчёт</button>
+  <button id="btn-apply" class="danger">В карантин</button>
+  <button id="btn-undo" class="ghost">Откатить</button>
+</section>
+
+<section class="progress" id="progress" hidden>
+  <div class="fill" id="progress-fill"></div>
+  <span id="progress-text"></span>
+</section>
+
+<nav class="tabs">
+  <button data-tab="exact" class="active">Точные дубли</button>
+  <button data-tab="near-strong">Похожие</button>
+  <button data-tab="clusters">Кластеры</button>
+</nav>
+
+<main id="main"><p class="empty">Нажми «Проиндексировать».</p></main>
+
+<dialog id="plan">
+  <h2>Перенос в карантин</h2>
+  <p class="muted">Файлы не удаляются — переезжают в <code>_kurator_quarantine/</code>. Откат одной кнопкой.</p>
+  <p id="plan-summary"></p>
+  <ul id="plan-list"></ul>
+  <div class="dialog-actions">
+    <button id="plan-cancel" class="ghost">Отмена</button>
+    <button id="plan-confirm" class="danger">Перенести</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>window.KURATOR_TOKEN = "__KURATOR_TOKEN__";</script>
+<script src="/app.js"></script>
+</body>
+</html>
