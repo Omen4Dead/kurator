@@ -16,7 +16,9 @@ from .config import (
 from .db import Photo, Store
 from .encoder import SiglipVision, model_is_present
 from .hashing import md5_file, to_hex
-from .imaging import BadImage, hash_views, open_rgb, read_exif
+from PIL import Image
+
+from .imaging import BadImage, hash_views, load_for_analysis, open_rgb, read_exif
 
 
 def walk_media(root: Path) -> Iterator[tuple[str, Path]]:
@@ -86,6 +88,8 @@ def index_root(
     for offset in range(0, len(pending), BATCH_SIZE):
         chunk = pending[offset : offset + BATCH_SIZE]
         metas: list[Photo] = []
+        frames: list[tuple[Photo, Image.Image]] = []
+
         for rel, path in chunk:
             try:
                 info = path.stat()
@@ -98,31 +102,38 @@ def index_root(
                 is_video=path.suffix.lower() in VIDEO_EXTENSIONS,
             )
             photo.md5 = md5_file(path)
-            photo.taken_at = read_exif(path).get("taken_at")
+
             if not photo.is_video:
                 try:
-                    with open_rgb(path) as img:
-                        photo.width, photo.height = img.size
-                        photo.phash, photo.dhash = (to_hex(v) for v in hash_views(img))
+                    rgb, width, height, taken = load_for_analysis(path)
                 except BadImage:
                     stats["unreadable"] += 1
+                    if photo.taken_at is None:
+                        photo.taken_at = _fallback_date(path)
+                    metas.append(photo)
+                    continue
+                photo.width, photo.height = width, height
+                photo.taken_at = taken or _fallback_date(path)
+                photo.phash, photo.dhash = (to_hex(v) for v in hash_views(rgb))
+                if encoder is not None:
+                    frames.append((photo, rgb))
+            else:
+                photo.taken_at = _fallback_date(path)
+
             metas.append(photo)
 
-        if encoder is not None:
-            embeddable = [p for p in metas if not p.is_video]
-            if embeddable:
-                used, vectors = encoder.encode_from_paths([root / p.rel_path for p in embeddable])
-                lookup = {p.rel_path: p for p in embeddable}
-                for path, vector in zip(used, vectors):
-                    photo = lookup[str(path.relative_to(root))]
-                    photo.embed = vector
-                    photo.embed_model = encoder.output_name
+        if frames:
+            photos_in_batch = [photo for photo, _ in frames]
+            images = [rgb for _, rgb in frames]
+            vectors = encoder.encode(images)
+            for photo, vector in zip(photos_in_batch, vectors):
+                photo.embed = vector
+                photo.embed_model = encoder.output_model_id
+                stats["embedded"] += 1
 
         for photo in metas:
             store.upsert(photo)
             stats["indexed"] += 1
-            if photo.embed is not None:
-                stats["embedded"] += 1
         store.commit()
         report(
             f"  {stats['indexed'] + stats['skipped']}/{stats['seen']} "
@@ -170,6 +181,18 @@ def backfill_embeddings(
         if progress:
             progress(f"  эмбеддинги {done}/{len(rows)}")
     return done
+
+
+def _fallback_date(path: Path) -> str | None:
+    """Когда EXIF нет, берём дату изменения файла."""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    import datetime as dt
+
+    moment = getattr(info, "st_birthtime", info.st_mtime)
+    return dt.datetime.fromtimestamp(moment).isoformat(timespec="seconds")
 
 
 def index_paths(root: Path, store: Store, rel_paths: list[str]) -> int:

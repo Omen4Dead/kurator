@@ -80,6 +80,7 @@ class SiglipVision:
         self.output_name = OUTPUT_NAME if OUTPUT_NAME in self.output_names else self.output_names[-1]
         self.path = Path(model_path)
         self.fingerprint = fingerprint(self.path)
+        self.output_model_id = f"{Path(model_path).name}:{self.fingerprint[:16]}"
         self.dim = self._probe_dim()
 
     def _probe_dim(self) -> int:

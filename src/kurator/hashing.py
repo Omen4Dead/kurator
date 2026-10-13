@@ -26,6 +26,10 @@ def md5_file(path: Path, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+def md5_bytes(data: bytes) -> str:
+    return hashlib.md5(data).hexdigest()
+
+
 def _dct_matrix(n: int) -> np.ndarray:
     k = np.arange(n).reshape(-1, 1).astype(np.float64)
     x = np.arange(n).reshape(1, -1).astype(np.float64)

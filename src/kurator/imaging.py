@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,41 @@ def open_rgb(path: Path) -> Image.Image:
         with Image.open(path) as img:
             img.load()
             return ImageOps.exif_transpose(img).convert("RGB")
+    except Exception as exc:
+        raise BadImage(str(exc)) from exc
+
+
+def _exif_from(img: Image.Image) -> dict:
+    exif = img.getexif()
+    out = {
+        "taken_at": None,
+        "orientation": int(exif.get(274, 1) or 1),
+    }
+    dt_orig = exif.get(36867)
+    dt_dig = exif.get(36868)
+    out["taken_at"] = _parse_exif_date(dt_orig) or _parse_exif_date(dt_dig)
+    return out
+
+
+def load_for_analysis(path: Path) -> tuple[Image.Image, int, int, str | None]:
+    """Одно чтение файла на всё: размеры, EXIF, кадр для эмбеддинга.
+
+    Файл читается в память один раз: на внешнем диске повторное чтение
+    10-мегабайтного снимка стоит дороже всего остального вместе взятого.
+
+    Для JPEG вызывается draft: libjpeg декодирует сразу в уменьшенном
+    размере. На 12-мегапиксельном снимке это 4000×3000 → 500×375 вместо
+    полного кадра, а нужно всё равно 224×224.
+    """
+    try:
+        with Image.open(io.BytesIO(path.read_bytes())) as img:
+            width, height = img.size
+            exif = _exif_from(img)
+            if 5 <= exif["orientation"] <= 8:
+                width, height = height, width
+            img.draft("RGB", (INPUT_SIZE, INPUT_SIZE))
+            rgb = ImageOps.exif_transpose(img).convert("RGB")
+            return rgb, width, height, exif["taken_at"]
     except Exception as exc:
         raise BadImage(str(exc)) from exc
 
