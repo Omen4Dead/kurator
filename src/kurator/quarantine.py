@@ -101,6 +101,32 @@ def apply_moves(store: Store, moves: list[Move], kind: str, dry_run: bool) -> di
             "paths": [m["from"] for m in done]}
 
 
+def _prune_empty_dirs(base: Path) -> None:
+    """Убрать опустевшие каталоги карантина.
+
+    Удалять файлы здесь нельзя: в карантине могут лежать снимки других
+    переносов, и откат одной группы не имеет права их трогать. Раньше
+    именно так и вышло — откат одной группы сносил все остальные.
+    """
+    if not base.exists():
+        return
+    for directory in sorted((p for p in base.rglob("*") if p.is_dir()),
+                            key=lambda p: len(p.parts), reverse=True):
+        try:
+            next(directory.iterdir())
+        except StopIteration:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        except OSError:
+            pass
+    try:
+        base.rmdir()
+    except OSError:
+        pass
+
+
 def undo_run(store: Store, run_id: int) -> dict:
     row = store.query("SELECT * FROM runs WHERE id=?", (run_id,))
     if not row:
@@ -161,22 +187,7 @@ def _restore(store: Store, row: sqlite3.Row) -> dict:
         manifest.unlink()
     except OSError:
         pass
-    for leftover in sorted(base.glob("**/*"), reverse=True):
-        if leftover.is_file() and leftover.suffix == ".json":
-            continue
-        if leftover.is_file():
-            leftover.unlink()
-    for leftover in sorted(base.glob("**/*"), reverse=True):
-        if leftover.is_dir():
-            try:
-                leftover.rmdir()
-            except OSError:
-                pass
-    try:
-        base.rmdir()
-    except OSError:
-        pass
-
+    _prune_empty_dirs(base)
     store.delete_run(int(row["id"]))
     if restored:
         store.backfill_paths(root, restored)

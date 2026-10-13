@@ -42,8 +42,9 @@ CREATE INDEX IF NOT EXISTS idx_photos_phash ON photos(phash);
 CREATE INDEX IF NOT EXISTS idx_photos_embed ON photos(embed_model);
 
 CREATE TABLE IF NOT EXISTS decisions (
-    rel_path   TEXT PRIMARY KEY,
+    group_sig  TEXT PRIMARY KEY,
     action     TEXT    NOT NULL,
+    members    TEXT    NOT NULL,
     created_at REAL    NOT NULL
 );
 
@@ -60,6 +61,45 @@ CREATE TABLE IF NOT EXISTS runs (
     manifest TEXT NOT NULL
 );
 """
+
+MIGRATIONS = """
+CREATE TABLE IF NOT EXISTS decisions_v2 (
+    group_sig  TEXT PRIMARY KEY,
+    action     TEXT    NOT NULL,
+    members    TEXT    NOT NULL,
+    created_at REAL    NOT NULL
+);
+"""
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Привести старую базу к текущей схеме.
+
+    CREATE TABLE IF NOT EXISTS не меняет уже созданную таблицу, поэтому
+    после правки схемы старое приложение падало с «no such column».
+    Старые решения хранили пропуск по файлу, группа — по отпечатку.
+    Переносим как есть, отпечаток пересчитается при первом действии.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(decisions)")}
+    if not columns:
+        return
+    if "group_sig" in columns:
+        return
+    legacy = [row["rel_path"] for row in conn.execute(
+        "SELECT rel_path FROM decisions WHERE action='skip' ORDER BY created_at"
+    )]
+    conn.executescript(MIGRATIONS)
+    for rel_path in legacy:
+        conn.execute(
+            "INSERT OR REPLACE INTO decisions_v2(group_sig, action, members, created_at) "
+            "VALUES(?, 'skip', ?, ?)",
+            (f"legacy:{abs(hash(rel_path)) & 0xFFFFFFFFFFFFFFFF:016x}", rel_path, time.time()),
+        )
+    conn.executescript(
+        "DROP TABLE decisions; ALTER TABLE decisions_v2 RENAME TO decisions;"
+    )
+    conn.commit()
+
 
 PHOTO_FIELDS = (
     "id",
@@ -119,6 +159,7 @@ class Store:
         conn = sqlite3.connect(path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
         return cls(conn=conn, root=root, path=path, lock=threading.RLock())
 
@@ -259,27 +300,44 @@ class Store:
             return ids, paths, np.zeros((0, 1), dtype=np.float32)
         return ids, paths, np.vstack(vectors)
 
-    def record_decision(self, rel_paths: list[str], action: str) -> int:
+    def record_decision(self, signature: str, members: list[str], action: str) -> int:
         with self.lock:
-            self.conn.executemany(
-                "INSERT INTO decisions(rel_path, action, created_at) VALUES(?,?,?) "
-                "ON CONFLICT(rel_path) DO UPDATE SET action=excluded.action, "
-                "created_at=excluded.created_at",
-                [(rel, action, time.time()) for rel in rel_paths],
+            self.conn.execute(
+                "INSERT INTO decisions(group_sig, action, members, created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(group_sig) DO UPDATE SET action=excluded.action, "
+                "members=excluded.members, created_at=excluded.created_at",
+                (signature, action, "\x1f".join(sorted(members)), time.time()),
             )
-        return len(rel_paths)
+        return 1
+
+    def unskip(self, signature: str) -> int:
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM decisions WHERE group_sig=? AND action='skip'", (signature,)
+            )
+        return cur.rowcount
 
     def skipped(self) -> set[str]:
-        rows = self.query("SELECT rel_path FROM decisions WHERE action='skip'")
-        return {r["rel_path"] for r in rows}
+        rows = self.query("SELECT group_sig FROM decisions WHERE action='skip'")
+        return {r["group_sig"] for r in rows}
 
-    def decided(self) -> set[str]:
-        rows = self.query("SELECT rel_path FROM decisions WHERE action='remove'")
-        return {r["rel_path"] for r in rows}
+    def skipped_groups(self) -> list[dict]:
+        out = []
+        for r in self.query(
+            "SELECT group_sig, members, created_at FROM decisions WHERE action='skip' "
+            "ORDER BY created_at"
+        ):
+            out.append({
+                "sig": r["group_sig"],
+                "members": r["members"].split("\x1f"),
+                "created_at": r["created_at"],
+            })
+        return out
 
     def all_decisions(self) -> list[dict]:
         return [
-            {"rel_path": r["rel_path"], "action": r["action"], "created_at": r["created_at"]}
+            {"group_sig": r["group_sig"], "action": r["action"],
+             "members": r["members"].split("\x1f"), "created_at": r["created_at"]}
             for r in self.query("SELECT * FROM decisions ORDER BY created_at")
         ]
 
@@ -292,12 +350,12 @@ class Store:
             self.conn.commit()
         return cur.rowcount
 
-    def drop_decisions(self, rel_paths: list[str]) -> None:
-        if not rel_paths:
+    def drop_decisions(self, signatures: list[str]) -> None:
+        if not signatures:
             return
         with self.lock:
             self.conn.executemany(
-                "DELETE FROM decisions WHERE rel_path=?", ((rel,) for rel in rel_paths)
+                "DELETE FROM decisions WHERE group_sig=?", ((sig,) for sig in signatures)
             )
 
     def backfill_paths(self, root: Path, rel_paths: list[str]) -> int:

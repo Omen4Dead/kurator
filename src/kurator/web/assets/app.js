@@ -3,7 +3,8 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   tab: "exact",
-  factory: { phash: 4, cosine: 0.9 },
+  factory: { phash: 10, cosine: 0.9 },
+  skipped: {},
   groups: [],
   clusters: [],
   root: "",
@@ -22,6 +23,11 @@ async function api(path, options = {}) {
   try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
   if (!res.ok) throw new Error(payload.error || payload.raw || `${res.status}`);
   return payload;
+}
+
+function whenRu(stamp) {
+  return new Date(stamp * 1000).toLocaleString("ru-RU",
+    { dateStyle: "short", timeStyle: "short" });
 }
 
 function fmtBytes(n) {
@@ -50,7 +56,7 @@ function escapeHtml(text) {
 }
 
 function groupKeyOf(group) {
-  return `${group.kind}:${group.members[0]}:${group.members.length}`;
+  return group.detail?.sig || `${group.kind}:${group.members[0]}:${group.members.length}`;
 }
 
 function groupKey(group) {
@@ -157,6 +163,21 @@ function tile(group, file) {
   </div>`;
 }
 
+function skipStrip(group, createdAt) {
+  const sig = groupKeyOf(group);
+  const title = (group.keeper || group.members[0]).split("/").pop();
+  const bytes = group.files.reduce((sum, f) => sum + (f.size || 0), 0);
+  return `<div class="card skipped" data-sig="${escapeHtml(sig)}">
+    <div class="strip">
+      <span class="stripdone">оставлено как есть</span>
+      <span class="striptitle">${escapeHtml(title)}</span>
+      <span class="stripmeta">${group.size} файла(ов) · ${fmtBytes(bytes)}${
+        createdAt ? ` · скрыто ${whenRu(createdAt)}` : ""}</span>
+      <button class="ghost" data-role="unskip" data-sig="${escapeHtml(sig)}">Вернуть в разбор</button>
+    </div>
+  </div>`;
+}
+
 function stripCard(strip) {
   return `<div class="card moved" data-run="${strip.run_id}">
     <div class="strip">
@@ -169,9 +190,13 @@ function stripCard(strip) {
 }
 
 async function refreshSituation() {
-  const hasSkipped = (await api("/api/state")).skipped || 0;
-  $("btn-unskip").hidden = !hasSkipped;
-  $("btn-unskip").textContent = hasSkipped ? `Вернуть пропущенные (${hasSkipped})` : "Вернуть пропущенные";
+  const data = await api("/api/state");
+  const map = {};
+  for (const item of data.skipped_groups || []) map[item.sig] = item.created_at;
+  state.skipped = map;
+  const count = Object.keys(map).length;
+  $("btn-unskip").hidden = !count;
+  $("btn-unskip").textContent = `Вернуть все скрытые (${count})`;
 }
 
 async function loadStrips() {
@@ -241,8 +266,12 @@ function render() {
   }
   const total = groups.reduce((sum, g) =>
     sum + g.files.filter((f) => isSelected(g).includes(f.path)).reduce((s, f) => s + f.size, 0), 0);
+  const hidden = state.skipped || {};
   const strips = state.strips.map(stripCard).join("");
-  const cards = groups.map((g, i) => groupCard(g, i));
+  const cards = groups.map((g, i) => {
+    const sig = groupKeyOf(g);
+    return hidden[sig] !== undefined ? skipStrip(g, hidden[sig]) : groupCard(g, i);
+  });
   main.innerHTML = (strips ? `<div class="strips">${strips}</div>` : "") +
     `<p class="meta">${groups.length} групп · отмечено на ${fmtBytes(total)}.
     Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить
@@ -254,7 +283,7 @@ function findGroupByKey(key) {
   return state.groups.find((g) => groupKey(g) === key);
 }
 
-function groupKey(paths) {
+function groupKeyByFirstPath(paths) {
   const first = paths[0] || "";
   const hit = state.groups.find((g) => g.members.includes(first));
   return hit ? groupKeyOf(hit) : "";
@@ -268,20 +297,24 @@ function groupTitle(paths) {
   return folder || first;
 }
 
-async function decide(paths, action) {
+async function decide(paths, action, sig) {
   if (!paths.length) { toast("ничего не отмечено"); return; }
   try {
     const result = await api("/api/decide", {
       method: "POST",
-      body: JSON.stringify({ paths, action }),
+      body: JSON.stringify({ paths, action, sig }),
     });
     if (result.blocked && result.blocked.length) {
       toast(`burst-кадры не трогаю: ${result.blocked.length} пропущено`, true);
     }
+    if (action === "skip") {
+      await refreshSituation();
+      render();
+      return;
+    }
     if (action === "remove") {
-      const paths = result.paths || [];
       if (result.run_id) {
-        const group = findGroupByKey(groupKey(paths));
+        const group = findGroupByKey(groupKeyByFirstPath(paths));
         const bytes = group
           ? group.files.filter((f) => paths.includes(f.path))
                        .reduce((sum, f) => sum + (f.size || 0), 0)
@@ -306,6 +339,19 @@ async function decide(paths, action) {
   }
 }
 
+async function unskipGroup(sig) {
+  try {
+    await api("/api/decide", {
+      method: "POST", body: JSON.stringify({ action: "unskip", paths: [], sig }),
+    });
+    toast("группа вернулась в разбор");
+    await refreshSituation();
+    render();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
 async function restoreRun(runId) {
   try {
     const result = await api("/api/restore", {
@@ -325,16 +371,18 @@ async function restoreRun(runId) {
 document.addEventListener("click", (event) => {
   const node = event.target.closest("[data-role]");
   if (!node) return;
-  const { role, key, path, run } = node.dataset;
+  const { role, key, path, run, sig } = node.dataset;
 
   if (role === "restore") { restoreRun(run); return; }
+  if (role === "unskip") { unskipGroup(sig); return; }
 
   const group = findGroupByKey(key);
   if (!group) return;
 
   if (role === "toggle") { toggle(group, path); return; }
   if (role === "remove") { decide(isSelected(group), "remove"); return; }
-  if (role === "skip") { decide(group.members, "skip"); return; }
+  if (role === "skip") { decide(group.members, "skip", groupKeyOf(group)); return; }
+  if (role === "unskip") { unskipGroup(sig); return; }
   if (role === "reset") { state.selected.delete(key); render(); return; }
 });
 
@@ -494,6 +542,9 @@ $("btn-reset").onclick = () => {
 };
 
 $("btn-unskip").onclick = async () => {
+  const count = Object.keys(state.skipped || {}).length;
+  if (!count) { toast("скрытых групп нет"); return; }
+  if (!confirm(`Вернуть в разбор все скрытые группы (${count})?`)) return;
   try {
     const result = await api("/api/decide", {
       method: "POST", body: JSON.stringify({ action: "clear", paths: ["-"] }),

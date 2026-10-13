@@ -84,23 +84,40 @@ def test_undo_returns_file_to_index(tmp_path):
     store.close()
 
 
-def test_skip_decisions_persist_and_clear(tmp_path):
+def test_skip_decisions_are_per_group(tmp_path):
+    """Пропуск хранится по отпечатку группы, а не по файлам.
+
+    Хранили по файлам пропуск одной группы прятал ещё и соседнюю, с
+    которой она делит файл: на широком пороге такое случается постоянно.
+    """
     make_store(tmp_path)
     store = Store.open(tmp_path)
 
-    store.record_decision(["b.txt", "c.txt"], "skip")
+    store.record_decision("near:aaa", ["b.txt", "c.txt"], "skip")
+    store.record_decision("near:bbb", ["x.jpg", "y.jpg"], "skip")
     store.commit()
-    assert store.skipped() == {"b.txt", "c.txt"}
+    assert store.skipped() == {"near:aaa", "near:bbb"}
+    assert len(store.skipped_groups()) == 2
+
+    assert store.unskip("near:aaa") == 1
+    store.commit()
+    assert store.skipped() == {"near:bbb"}
 
     store.clear_decisions("skip")
     store.commit()
     assert store.skipped() == set()
-
-    store.record_decision(["a.txt"], "remove")
-    store.commit()
-    assert store.decided() == {"a.txt"}
-    assert store.skipped() == set()
     store.close()
+
+
+def test_group_signature_is_unique_for_shared_first_member():
+    """Две группы с общим первым файлом обязаны иметь разные отпечатки."""
+    from kurator.dedupe import group_signature
+
+    a = group_signature("near-strong", ["shared.jpg", "one.jpg"])
+    b = group_signature("near-strong", ["shared.jpg", "two.jpg"])
+    assert a != b
+    assert group_signature("near-strong", ["one.jpg", "shared.jpg"]) == a
+    assert group_signature("burst", ["shared.jpg", "one.jpg"]) != a
 
 
 def test_undo_without_runs_is_harmless(tmp_path):
@@ -212,4 +229,42 @@ def test_dry_run_writes_nothing(tmp_path):
 
     assert not quarantine_root(tmp_path).exists(), "dry-run создал каталог карантина"
     assert (tmp_path / "b.txt").exists()
+    store.close()
+
+
+def test_undo_one_group_keeps_other_quarantined_files(tmp_path):
+    """Откат одной группы не должен трогать чужие файлы карантина.
+
+    Регрессия: откат обходил всё дерево карантина и удалял каждый файл,
+    кроме json. Возвращая две фотографии одной группы, он сносил все
+    переносы, сделанные раньше.
+    """
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, plan_moves, undo_run
+
+    store = Store.open(tmp_path)
+    for name in ("a1.jpg", "a2.jpg", "b1.jpg", "b2.jpg"):
+        p = tmp_path / name
+        p.write_bytes(name.encode())
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+
+    first = apply_moves(store, plan_moves(tmp_path, ["a1.jpg", "a2.jpg"]),
+                       kind="by-hand", dry_run=False)
+    second = apply_moves(store, plan_moves(tmp_path, ["b1.jpg", "b2.jpg"]),
+                        kind="by-hand", dry_run=False)
+    assert first["run_id"] != second["run_id"]
+
+    quarantined = sorted(p.name for p in quarantine_root(tmp_path).rglob("*.jpg"))
+    assert quarantined == ["a1.jpg", "a2.jpg", "b1.jpg", "b2.jpg"]
+
+    undo_run(store, first["run_id"])
+
+    assert (tmp_path / "a1.jpg").exists(), "свои файлы должны вернуться"
+    assert (tmp_path / "b1.jpg").is_file() is False
+    assert (tmp_path / "b2.jpg").is_file() is False
+    assert sorted(p.name for p in quarantine_root(tmp_path).rglob("*.jpg")) == [
+        "b1.jpg", "b2.jpg"
+    ], "чужие файлы карантина обязаны уцелеть"
     store.close()

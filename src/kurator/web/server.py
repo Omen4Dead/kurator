@@ -261,7 +261,7 @@ class State:
 
 def _groups_for(state: State, phash: int, cosine: float):
     from ..cluster import cluster_paths
-    from ..dedupe import analyze
+    from ..dedupe import analyze, group_signature
 
     photos = state.store.photos()
     index = {p.rel_path: p for p in photos}
@@ -272,9 +272,8 @@ def _groups_for(state: State, phash: int, cosine: float):
         strong_cosine=cosine,
         include_burst=True,
     )
-    skipped = state.store.skipped()
-    if skipped:
-        groups = [g for g in groups if not (set(g.members) & skipped)]
+    for group in groups:
+        group.detail["sig"] = group_signature(group.kind, group.members)
 
     _, paths, vectors = state.store.embeddings()
     clusters: list[list[str]] = []
@@ -414,6 +413,7 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     "quarantine": QUARANTINE_DIRNAME,
                     "skipped": len(store.skipped()),
+                    "skipped_groups": store.skipped_groups(),
                     "last_index_at": store.get_meta("last_index_at"),
                     "job": self.state.job,
                 }
@@ -612,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
 
             paths = [p for p in (body.get("paths") or []) if p]
             action = body.get("action")
-            if not paths:
+            if action not in ("unskip", "clear") and not paths:
                 self._json({"error": "нечего решать"}, 400)
                 return
             root = self.state.root
@@ -630,14 +630,29 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 moves = plan_moves(root, selected)
                 result = apply_moves(self.state.store, moves, kind="by-hand", dry_run=False)
-                self.state.store.drop_decisions(paths)
+                if body.get("sig"):
+                    self.state.store.drop_decisions([body["sig"]])
                 self._json({**result, "blocked": blocked})
                 return
 
             if action == "skip":
-                self.state.store.record_decision(paths, "skip")
+                signature = body.get("sig") or ""
+                if not signature:
+                    self._json({"error": "не указан отпечаток группы"}, 400)
+                    return
+                self.state.store.record_decision(signature, paths, "skip")
                 self.state.store.commit()
-                self._json({"skipped": len(paths)})
+                self._json({"skipped": len(paths), "sig": signature})
+                return
+
+            if action == "unskip":
+                signature = body.get("sig") or ""
+                if not signature:
+                    self._json({"error": "не указан отпечаток группы"}, 400)
+                    return
+                removed = self.state.store.unskip(signature)
+                self.state.store.commit()
+                self._json({"cleared": removed})
                 return
 
             if action == "clear":

@@ -348,6 +348,20 @@ def calibration(
     }
 
 
+def group_signature(kind: str, members: list[str]) -> str:
+    """Устойчивый и уникальный отпечаток группы.
+
+    Ключ из вида группы и первого файла не годится: при широком пороге
+    две группы начинают с одного и того же файла, получают одинаковый
+    ключ и делят между собой состояние выбора в интерфейсе.
+    """
+    joined = "\x1f".join(sorted(members)).encode("utf-8")
+    h = 0xCBF29CE484222325
+    for byte in joined:
+        h = ((h ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{kind}:{h:016x}"
+
+
 def apply_burst_protection(
     groups: list[Group],
     photos: list[Photo],

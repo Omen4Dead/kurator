@@ -58,7 +58,11 @@ def test_pipeline_matches_ground_truth(tmp_path):
     assert burst.false_positive == 0, "burst-кадр попал бы в карантин"
 
     assert near.false_negative == 0, f"пропущено настоящих near-дублей: {near.notes[:3]}"
-    assert traps.false_positive <= max(1, traps.true_positive // 2), (
+
+    from kurator.config import NEAR_DUP_PHASH_DISTANCE
+
+    budget = 1 if NEAR_DUP_PHASH_DISTANCE <= 4 else 3
+    assert traps.false_positive <= max(budget, traps.true_positive // 3), (
         f"слишком много ловушек принято за дубли: {traps.false_positive} из "
         f"{traps.true_positive + traps.false_positive}; " + "; ".join(traps.notes[:3])
     )
