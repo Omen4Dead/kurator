@@ -318,3 +318,111 @@ def test_list_runs_survives_broken_manifest(tmp_path):
 
     assert list_runs(store) == []
     store.close()
+
+
+def test_list_trash_shows_quarantined_files_with_origin(tmp_path):
+    """Корзина показывает, что лежит в карантине и откуда файл пришёл."""
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, list_trash, plan_moves
+
+    store = Store.open(tmp_path)
+    for name in ("a.jpg", "b.jpg"):
+        p = tmp_path / name
+        p.write_bytes(name.encode() * 10)
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+
+    apply_moves(store, plan_moves(tmp_path, ["a.jpg", "b.jpg"]), kind="by-hand", dry_run=False)
+    items = list_trash(store)
+
+    assert {i["from_path"] for i in items} == {"a.jpg", "b.jpg"}
+    assert all(i["to_path"].startswith("_kurator_quarantine/") for i in items)
+    assert all(i["size"] > 0 and i["orphan"] is False for i in items)
+    store.close()
+
+
+def test_delete_trash_removes_files_and_manifest(tmp_path):
+    """Необратимый выброс из корзины чистит файл, манифест и запись в базе."""
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, delete_trash, list_trash, plan_moves
+
+    store = Store.open(tmp_path)
+    for name in ("a.jpg", "b.jpg"):
+        p = tmp_path / name
+        p.write_bytes(name.encode() * 10)
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+
+    apply_moves(store, plan_moves(tmp_path, ["a.jpg", "b.jpg"]), kind="by-hand", dry_run=False)
+    manifest = Path(store.query("SELECT manifest FROM runs ORDER BY id DESC LIMIT 1")[0]["manifest"])
+    assert manifest.is_file()
+
+    result = delete_trash(store, [list_trash(store)[0]["key"]])
+
+    assert result["deleted"] == 1
+    assert result["failed"] == []
+    assert result["bytes"] > 0
+    assert len(list_trash(store)) == 1, "второй файл обязан уцелеть"
+    assert manifest.is_file(), "манифест с оставшимся переносом не трогаем"
+    store.close()
+
+
+def test_delete_trash_drops_manifest_when_last_move_gone(tmp_path):
+    """Выброшенный последний файл убирает манифест и запись о переносе."""
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, delete_trash, list_trash, plan_moves
+
+    store = Store.open(tmp_path)
+    p = tmp_path / "a.jpg"
+    p.write_bytes(b"a" * 10)
+    info = p.stat()
+    store.upsert(Photo(rel_path="a.jpg", size=info.st_size, mtime=info.st_mtime, md5="a"))
+    store.commit()
+
+    apply_moves(store, plan_moves(tmp_path, ["a.jpg"]), kind="by-hand", dry_run=False)
+    manifest = Path(store.query("SELECT manifest FROM runs ORDER BY id DESC LIMIT 1")[0]["manifest"])
+
+    delete_trash(store, [list_trash(store)[0]["key"]])
+
+    assert list_trash(store) == []
+    assert manifest.is_file() is False, "манифест без переносов не должен висеть"
+    assert store.query("SELECT * FROM runs") == []
+    store.close()
+
+
+def test_delete_trash_refuses_paths_outside_quarantine(tmp_path):
+    """Ключ вне карантина удалять нельзя, даже если он подставлен вручную."""
+    from kurator.db import Photo
+    from kurator.quarantine import delete_trash
+
+    store = Store.open(tmp_path)
+    (tmp_path / "precious.jpg").write_bytes("\u043d\u0435 \u0442\u0440\u043e\u043d\u044c".encode())
+    info = (tmp_path / "precious.jpg").stat()
+    store.upsert(Photo(rel_path="precious.jpg", size=info.st_size, mtime=info.st_mtime, md5="p"))
+    store.commit()
+
+    result = delete_trash(store, ["precious.jpg"])
+
+    assert result["deleted"] == 0
+    assert result["failed"] and "отказ" in result["failed"][0]["error"]
+    assert (tmp_path / "precious.jpg").is_file(), "файл вне карантина обязан уцелеть"
+    store.close()
+
+
+def test_list_trash_reports_files_without_manifest(tmp_path):
+    """Подложенный в карантин файл без манифеста виден и помечен сиротой."""
+    from kurator.quarantine import list_trash, quarantine_root
+
+    store = Store.open(tmp_path)
+    stray = quarantine_root(tmp_path) / "Фото" / "подкидыш.jpg"
+    stray.parent.mkdir(parents=True)
+    stray.write_bytes(b"x" * 4)
+
+    items = list_trash(store)
+
+    assert len(items) == 1
+    assert items[0]["orphan"] is True
+    assert items[0]["from_path"] is None
+    store.close()

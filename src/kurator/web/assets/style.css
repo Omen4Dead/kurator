@@ -122,3 +122,25 @@ dialog h2 { margin:0 0 6px; font-size:18px; }
 #toast.show { opacity:1; }
 #toast.bad { border-color:#7f1d1d; }
 code { background:#27272a; padding:1px 5px; border-radius:4px; font-size:12px; }
+/* Корзина: содержимое карантина и необратимое удаление */
+strong.warn { color:#fca5a5; }
+.trashbar { display:flex; align-items:center; gap:10px; margin:10px 0; }
+.trashbar .muted { margin-left:auto; }
+.trashlist { list-style:none; margin:0 0 14px; padding:0; max-height:52vh; overflow:auto;
+  border:1px solid var(--line); border-radius:8px; }
+.trashlist:empty::after { content:"Корзина пуста"; display:block; padding:26px 12px;
+  text-align:center; color:var(--muted); font-size:13px; }
+.trashitem { display:flex; align-items:center; gap:12px; padding:8px 10px; border-top:1px solid var(--line); }
+.trashitem:first-child { border-top:none; }
+.trashitem img { width:56px; height:56px; object-fit:cover; border-radius:6px;
+  background:var(--panel); flex:none; }
+.trashitem .trashbody { min-width:0; flex:1; }
+.trashitem .trashname { font-size:13px; }
+.trashitem .trashpath { font-size:11px; color:var(--muted); overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.trashitem .trashsize { font-size:12px; color:var(--muted); flex:none; }
+.trashitem .orphan { color:#fbbf24; font-size:11px; }
+button.danger.armed { background:#b91c1c; border-color:#fca5a5; animation:armed .9s ease-in-out infinite; }
+@keyframes armed { 0%,100% { opacity:1 } 50% { opacity:.55 } }
+button.danger:disabled { background:#3f1f1f; border-color:#3f1f1f; color:#9ca3af;
+  opacity:.6; cursor:not-allowed; }

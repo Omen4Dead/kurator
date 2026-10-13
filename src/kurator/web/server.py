@@ -426,6 +426,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"runs": list_runs(self.state.store)})
             return
 
+        if route == "/api/trash":
+            from ..quarantine import list_trash
+
+            items = list_trash(self.state.store)
+            self._json({
+                "items": items,
+                "count": len(items),
+                "bytes": sum(i["size"] for i in items),
+            })
+            return
+
         if route == "/api/roots":
             self._json({"suggestions": candidate_roots(), "current": str(self.state.root)})
             return
@@ -531,6 +542,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "не указан перенос"}, 400)
                 return
             result = undo_run(self.state.store, int(run_id))
+            self._json(result)
+            return
+
+        if route == "/api/trash/delete":
+            from ..quarantine import delete_trash
+
+            keys = body.get("keys") or []
+            if not isinstance(keys, list) or not keys:
+                self._json({"error": "не выбрано ни одного файла"}, 400)
+                return
+            if not body.get("confirm"):
+                self._json({"error": "нужно явное подтверждение"}, 400)
+                return
+            result = delete_trash(self.state.store, [str(k) for k in keys])
             self._json(result)
             return
 

@@ -363,6 +363,7 @@ async function restoreRun(runId) {
     toast(result.message ? result.message : `возвращено ${result.moved ?? 0}`);
     await loadState();
     await loadStrips();
+    await loadTrashCount();
     await refreshSituation();
     await loadFindings();
   } catch (err) {
@@ -580,6 +581,130 @@ $("btn-undo").onclick = async () => {
 };
 
 loadState()
-  .then(() => Promise.all([loadFindings(), loadStrips(), refreshSituation()]))
+  .then(() => Promise.all([loadFindings(), loadStrips(), refreshSituation(), loadTrashCount()]))
   .then(() => render())
   .catch((err) => toast(err.message, true));
+/* ---- Корзина: содержимое карантина, удаление выбранного или всего ---- */
+
+state.trash = { items: [], chosen: new Set(), armed: null };
+
+function trashKeyLabel(item) {
+  return item.from_path || "неизвестно, манифест потерян";
+}
+
+function renderTrash() {
+  const box = state.trash;
+  $("trash-badge").textContent = box.items.length;
+  $("trash-selected").textContent = `выбрано ${box.chosen.size}`;
+
+  $("trash-list").innerHTML = box.items.map((item) => {
+    const checked = box.chosen.has(item.key) ? " checked" : "";
+    const orphan = item.orphan
+      ? `<div class="orphan">без манифеста — откатить нечем</div>` : "";
+    return `<li class="trashitem">
+      <input type="checkbox" data-trash="${escapeHtml(item.key)}"${checked}>
+      <img src="${thumb(item.to_path)}" loading="lazy" alt="">
+      <div class="trashbody">
+        <div class="trashname">${escapeHtml(item.to_path.split("/").pop())}</div>
+        <div class="trashpath" title="${escapeHtml(item.to_path)}">${escapeHtml(trashKeyLabel(item))}</div>
+        ${orphan}
+      </div>
+      <span class="trashsize">${fmtBytes(item.size)}</span>
+    </li>`;
+  }).join("");
+
+  const n = box.chosen.size;
+  $("trash-confirm").disabled = !n;
+  $("trash-confirm").textContent = n ? `Удалить выбранные (${n})` : "Удалить выбранные";
+  $("trash-wipe").disabled = !box.items.length;
+
+  const armed = box.armed;
+  $("trash-confirm").classList.toggle("armed", armed === "chosen");
+  $("trash-wipe").classList.toggle("armed", armed === "all");
+  if (armed === "chosen" && n) {
+    $("trash-confirm").textContent = `Точно удалить ${n} файл(ов)? Отменить нельзя`;
+  }
+  if (armed === "all" && box.items.length) {
+    $("trash-wipe").textContent = `Точно удалить все ${box.items.length}? Отменить нельзя`;
+  } else {
+    $("trash-wipe").textContent = "Удалить всё";
+  }
+}
+
+async function openTrash() {
+  try {
+    const data = await api("/api/trash");
+    state.trash = { items: data.items, chosen: new Set(), armed: null };
+    renderTrash();
+    $("trash").showModal();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function runTrashDelete(mode) {
+  const box = state.trash;
+  const keys = mode === "all" ? box.items.map((i) => i.key) : [...box.chosen];
+  if (!keys.length) { toast("ничего не выбрано", true); return; }
+  try {
+    const result = await api("/api/trash/delete", {
+      method: "POST",
+      body: JSON.stringify({ keys, confirm: true, mode }),
+    });
+    const freed = fmtBytes(result.bytes || 0);
+    if (result.failed && result.failed.length) {
+      toast(`удалено ${result.deleted}, не вышло ${result.failed.length}`, true);
+    } else {
+      toast(`удалено навсегда ${result.deleted} (${freed})`);
+    }
+    box.armed = null;
+    await loadTrashCount();
+    const data = await api("/api/trash");
+    state.trash = { items: data.items, chosen: new Set(), armed: null };
+    renderTrash();
+    if (!data.items.length) $("trash").close();
+    await loadStrips();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function loadTrashCount() {
+  try {
+    const data = await api("/api/trash");
+    $("btn-trash").hidden = !data.count;
+    $("btn-trash").textContent = data.count
+      ? `Корзина (${data.count})` : "Корзина";
+  } catch {
+    $("btn-trash").hidden = true;
+  }
+}
+
+$("btn-trash").onclick = openTrash;
+$("trash-cancel").onclick = () => { state.trash.armed = null; $("trash").close(); };
+$("trash-all").onclick = () => {
+  state.trash.chosen = new Set(state.trash.items.map((i) => i.key));
+  state.trash.armed = null;
+  renderTrash();
+};
+$("trash-none").onclick = () => {
+  state.trash.chosen = new Set();
+  state.trash.armed = null;
+  renderTrash();
+};
+$("trash-list").addEventListener("change", (event) => {
+  const box = event.target.closest("input[data-trash]");
+  if (!box) return;
+  if (box.checked) state.trash.chosen.add(box.dataset.trash);
+  else state.trash.chosen.delete(box.dataset.trash);
+  state.trash.armed = null;
+  renderTrash();
+});
+$("trash-confirm").onclick = () => {
+  if (state.trash.armed !== "chosen") { state.trash.armed = "chosen"; renderTrash(); return; }
+  runTrashDelete("chosen");
+};
+$("trash-wipe").onclick = () => {
+  if (state.trash.armed !== "all") { state.trash.armed = "all"; renderTrash(); return; }
+  runTrashDelete("all");
+};

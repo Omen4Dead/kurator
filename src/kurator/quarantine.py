@@ -197,3 +197,134 @@ def _restore(store: Store, row: sqlite3.Row) -> dict:
     if restored:
         store.backfill_paths(root, restored)
     return {"moved": len(restored), "missing": missing}
+
+def list_trash(store: Store) -> list[dict]:
+    """Что сейчас лежит в карантине.
+
+    Источник правды — манифесты: в них записано, откуда пришёл файл.
+    Вдобавок подбираются файлы, о которых манифест потерялся: их всё
+    равно видно в папке карантина, молча пропускать их нельзя.
+    """
+    root = store.root
+    base = quarantine_root(root)
+    items: list[dict] = []
+    claimed: set[str] = set()
+
+    rows = store.query("SELECT id, manifest FROM runs ORDER BY id DESC")
+    for row in rows:
+        manifest = Path(row["manifest"])
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for entry in payload.get("moves", []):
+            rel_to = entry.get("to", "")
+            path = root / rel_to
+            claimed.add(rel_to)
+            if not path.is_file():
+                continue
+            info = path.stat()
+            items.append({
+                "key": rel_to,
+                "from_path": entry.get("from"),
+                "to_path": rel_to,
+                "size": info.st_size,
+                "created_at": payload.get("created_at", ""),
+                "run_id": int(row["id"]),
+                "orphan": False,
+            })
+
+    if base.is_dir():
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or path.suffix == ".json":
+                continue
+            rel_to = path.relative_to(root).as_posix()
+            if rel_to in claimed:
+                continue
+            info = path.stat()
+            items.append({
+                "key": rel_to,
+                "from_path": None,
+                "to_path": rel_to,
+                "size": info.st_size,
+                "created_at": dt.datetime.fromtimestamp(info.st_mtime).isoformat(timespec="seconds"),
+                "run_id": None,
+                "orphan": True,
+            })
+
+    items.sort(key=lambda i: (i["created_at"], i["to_path"]), reverse=True)
+    return items
+
+
+def delete_trash(store: Store, keys: list[str]) -> dict:
+    """Удалить из карантина навсегда.
+
+    Возврат здесь один и необратимый, поэтому проверки жёсткие: ключ
+    обязан лежать внутри папки карантина и совпадать с тем, что
+    реально лежит на диске. Манифест, из которого вынули все
+    переносы, удаляется вместе с записью в базе — иначе в истории
+    останется перенос, откатывать который уже нечего.
+    """
+    root = store.root
+    base = quarantine_root(root)
+    wanted = {k for k in keys if isinstance(k, str) and k}
+    deleted: list[str] = []
+    failed: list[dict] = []
+    freed = 0
+
+    for key in sorted(wanted):
+        path = root / key
+        try:
+            resolved = path.resolve()
+        except OSError:
+            failed.append({"key": key, "error": "путь не читается"})
+            continue
+        if base.resolve() not in resolved.parents:
+            failed.append({"key": key, "error": "это не карантин, отказ"})
+            continue
+        if not path.is_file():
+            failed.append({"key": key, "error": "файла уже нет"})
+            continue
+        try:
+            freed += path.stat().st_size
+            path.unlink()
+        except OSError as exc:
+            failed.append({"key": key, "error": str(exc)})
+            continue
+        deleted.append(key)
+
+    gone = set(deleted)
+    for row in store.query("SELECT id, manifest FROM runs"):
+        manifest = Path(row["manifest"])
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        moves = payload.get("moves", [])
+        left = [m for m in moves if m.get("to") not in gone]
+        if len(left) == len(moves):
+            continue
+        if not left:
+            try:
+                manifest.unlink()
+            except OSError:
+                pass
+            store.delete_run(int(row["id"]))
+            continue
+        payload["moves"] = left
+        payload["count"] = len(left)
+        payload["bytes"] = sum(
+            (root / m["from"]).stat().st_size
+            for m in left
+            if (root / m["from"]).is_file()
+        )
+        try:
+            manifest.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+    _prune_empty_dirs(base)
+    store.commit()
+    return {"deleted": len(deleted), "bytes": freed, "failed": failed}
