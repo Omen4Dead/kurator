@@ -262,16 +262,18 @@ def cmd_evaluate(args) -> int:
 
     if args.sweep:
         rows = sweep(root, store)
-        print(f"{'pHash':>6} {'cosine':>7} {'TP':>4} {'FP':>4} {'FN':>4} {'prec':>7} {'recall':>7} {'F1':>7} {'burst-в-карантине':>18}")
+        print(f"{'pHash':>5} {'cosine':>6} {'near':>6} {'F1':>6} {'ловушки':>8} {'лишнее в exact':>14} {'burst':>6}")
         for row in rows:
-            near, safe = row["near"], row["safe"]
-            flag = "" if safe["fp"] == 0 else f"  ⚠ {safe['fp']}"
+            near, trap, safe, burst = row["near"], row["trap"], row["safe"], row["burst"]
+            flag = "" if (safe["fp"] == 0 and burst["fp"] == 0) else "  ⚠"
             print(
-                f"{row['phash']:>6} {row['cosine']:>7.2f} {near['tp']:>4} {near['fp']:>4} {near['fn']:>4} "
-                f"{near['precision']:>7.3f} {near['recall']:>7.3f} {near['f1']:>7.3f} "
-                f"{safe['fp']:>18}{flag}"
+                f"{row['phash']:>5} {row['cosine']:>6.2f} "
+                f"{str(near['tp']) + '/' + str(near['fn']):>6} {near['f1']:>6.3f} "
+                f"{trap['fp']:>8} {safe['fp']:>14} {burst['fp']:>6}{flag}"
             )
-        print("\nстроки без ⚠ — ни один burst-кадр не попадает в карантин")
+        print("\nловушки — сколько похожих, но разных сюжетов названо дублями")
+        print("лишнее в exact — попало ли что-нибудь лишнее в карантин по умолчанию")
+        print("⚠ означает, что дефолтный карантин не чист")
         store.close()
         return 0
 

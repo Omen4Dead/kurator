@@ -17,6 +17,7 @@ from .dedupe import EXACT as KIND_EXACT, Group, analyze, burst_members
 ORIGINAL = "original"
 EXACT_DUP = "exact-dup"
 NEAR_DUP = "near-dup"
+LOOKALIKE = "lookalike"
 BURST_KIND = "burst"
 
 
@@ -158,19 +159,41 @@ def evaluate(
         entry["rel"] for entry in truth.values() if entry["kind"] == BURST_KIND
     }
 
-    redundant_kinds = {EXACT_DUP, NEAR_DUP}
-    quarantinable: list[str] = []
-    for group in filtered:
-        quarantinable.extend(group.victims())
-    quarantinable = sorted(set(quarantinable))
+    trap_m = Metrics("ловушки не названы дублями")
+    trap_pairs = _expected_pairs(truth, LOOKALIKE)
+    reported = _pairs(found_exact) | _pairs(found_near)
+    for pair in trap_pairs:
+        if pair in reported:
+            trap_m.false_positive += 1
+            trap_m.notes.append(f"ловушка попала в дубли: {pair[0]} ↔ {pair[1]}")
+    trap_m.true_positive = len(trap_pairs) - trap_m.false_positive
+    trap_m.false_negative = len(trap_pairs) - trap_m.true_positive
 
-    safe_m = Metrics("в карантин попадают только настоящие дубли")
-    for rel in quarantinable:
+    redundant_kinds = {EXACT_DUP, NEAR_DUP}
+
+    exact_victims = sorted(
+        {rel for g in filtered if g.kind == KIND_EXACT for rel in g.victims()}
+    )
+    near_victims = sorted(
+        {rel for g in filtered if g.kind != KIND_EXACT for rel in g.victims()}
+    )
+    quarantinable = sorted(set(exact_victims) | set(near_victims))
+
+    default_m = Metrics("карантин по умолчанию (только exact) чист")
+    for rel in exact_victims:
         if truth.get(rel, {}).get("kind") in redundant_kinds:
-            safe_m.true_positive += 1
+            default_m.true_positive += 1
         else:
-            safe_m.false_positive += 1
-            safe_m.notes.append(f"в карантин лишнее: {rel}")
+            default_m.false_positive += 1
+            default_m.notes.append(f"в карантин лишнее: {rel}")
+
+    optin_m = Metrics("если разрешить near-дубли вручную")
+    for rel in near_victims:
+        if truth.get(rel, {}).get("kind") in redundant_kinds:
+            optin_m.true_positive += 1
+        else:
+            optin_m.false_positive += 1
+            optin_m.notes.append(f"near-кандидат лишний: {rel}")
 
     burst_m = Metrics("burst: ни один кадр не уходит в карантин")
     burst_m.true_positive = len(expected_burst & found_burst)
@@ -186,17 +209,20 @@ def evaluate(
         "exact": sum(1 for e in truth.values() if e["kind"] == EXACT_DUP),
         "near": sum(1 for e in truth.values() if e["kind"] == NEAR_DUP),
         "burst": len(expected_burst),
+        "lookalike": len({rel for rel, e in truth.items() if e["kind"] == LOOKALIKE}),
         "quarantinable": len(quarantinable),
         "reclaimable_bytes": sum(
             by_path[rel].size for rel in quarantinable if rel in by_path
         ),
         "dropped_by_burst": dropped_by_burst,
         "groups_after": len(filtered),
+        "exact_victims": len(exact_victims),
+        "near_victims": len(near_victims),
     }
 
     return {
         "stats": stats,
-        "metrics": [exact_m, near_m, safe_m, burst_m],
+        "metrics": [exact_m, near_m, trap_m, default_m, optin_m, burst_m],
     }
 
 
@@ -215,8 +241,10 @@ def sweep(
                     "phash": p_hash,
                     "cosine": cosine,
                     "near": next(m for m in result["metrics"] if m.label.startswith("похожие")).as_dict(),
-                    "safe": next(m for m in result["metrics"] if m.label.startswith("в карантин")).as_dict(),
-                    "burst": result["metrics"][3].as_dict(),
+                    "trap": next(m for m in result["metrics"] if m.label.startswith("ловушки")).as_dict(),
+                    "safe": next(m for m in result["metrics"] if m.label.startswith("карантин по умолчанию")).as_dict(),
+                    "optin": next(m for m in result["metrics"] if m.label.startswith("если разрешить")).as_dict(),
+                    "burst": next(m for m in result["metrics"] if m.label.startswith("burst")).as_dict(),
                     "reclaimable": result["stats"]["reclaimable_bytes"],
                 }
             )

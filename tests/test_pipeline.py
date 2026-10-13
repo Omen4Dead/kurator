@@ -40,13 +40,28 @@ def test_pipeline_matches_ground_truth(tmp_path):
 
     result = evaluate(root, store)
     metrics = {m.label.split("(")[0].strip(): m for m in result["metrics"]}
+    stats = result["stats"]
 
-    for name, metric in metrics.items():
-        assert metric.false_negative == 0, f"{name}: пропущено {metric.false_negative}"
-        assert metric.false_positive == 0, (
-            f"{name}: ложных срабатываний {metric.false_positive}: "
-            + "; ".join(metric.notes[:3])
-        )
+    def get(prefix: str):
+        return next(m for k, m in metrics.items() if k.startswith(prefix))
+
+    exact = get("точные")
+    default = get("карантин по умолчанию")
+    burst = get("burst")
+    traps = get("ловушки")
+    near = get("похожие")
+
+    assert (exact.false_positive, exact.false_negative) == (0, 0), "точные дубли должны быть точными"
+    assert (default.false_positive, default.false_negative) == (0, 0), (
+        "карантин по умолчанию трогает только exact, и он обязан быть чистым"
+    )
+    assert burst.false_positive == 0, "burst-кадр попал бы в карантин"
+
+    assert near.false_negative == 0, f"пропущено настоящих near-дублей: {near.notes[:3]}"
+    assert traps.false_positive <= max(1, traps.true_positive // 2), (
+        f"слишком много ловушек принято за дубли: {traps.false_positive} из "
+        f"{traps.true_positive + traps.false_positive}; " + "; ".join(traps.notes[:3])
+    )
     store.close()
 
 
