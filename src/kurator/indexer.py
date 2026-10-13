@@ -45,6 +45,13 @@ def index_root(
 ) -> dict[str, int]:
     root = root.resolve()
     stats = {"seen": 0, "indexed": 0, "skipped": 0, "embedded": 0, "unreadable": 0, "removed": 0}
+
+    if encoder is not None:
+        stored = store.get_meta("model.fingerprint")
+        if stored and stored != encoder.fingerprint and store.embedded_count():
+            stats["model_changed"] = True
+            rehash = True
+
     known = {} if rehash else store.known_state()
     if known_override:
         known = known_override
@@ -126,6 +133,7 @@ def index_root(
     store.set_meta("last_index_at", str(int(time.time())))
     if encoder is not None:
         store.set_meta("encoder", encoder.output_name)
+        store.set_meta("model.fingerprint", encoder.fingerprint)
     store.commit()
     return stats
 

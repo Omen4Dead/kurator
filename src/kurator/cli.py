@@ -128,6 +128,8 @@ def cmd_index(args) -> int:
         progress=lambda message: print(message, flush=True),
     )
     store.commit()
+    if stats.get("model_changed"):
+        print("модель сменилась — эмбеддинги пересчитываются полностью")
     print(
         f"\nготово: всего {stats['seen']}, новых {stats['indexed']}, "
         f"пропущено {stats['skipped']}, удалено из индекса {stats['removed']}, "
@@ -304,11 +306,13 @@ def cmd_evaluate(args) -> int:
 
 
 def cmd_ui(args) -> int:
-    root = Path(args.root).expanduser().resolve()
-    if not root.is_dir():
-        raise SystemExit(f"нет такой папки: {root}")
     from .web.server import resolve_port, serve
 
+    root = None
+    if args.root and Path(args.root) != Path("."):
+        root = Path(args.root).expanduser().resolve()
+        if not root.is_dir():
+            raise SystemExit(f"нет такой папки: {root}")
     port = resolve_port(args.port)
     serve(root, host="127.0.0.1", port=port, open_browser=not args.no_browser)
     return 0
@@ -510,7 +514,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_evaluate)
 
     p = sub.add_parser("ui", help="локальный веб-интерфейс в браузере")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument(
+        "root", nargs="?", default=".",
+        help="папка с фотографиями; без неё откроется та, что была в прошлый раз",
+    )
     p.add_argument("--port", type=int, default=8765, help="порт (берёт следующий свободный)")
     p.add_argument("--no-browser", action="store_true", help="не открывать браузер самому")
     p.set_defaults(func=cmd_ui)

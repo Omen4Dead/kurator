@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import mimetypes
+import sqlite3
 import secrets
 import threading
 import time
@@ -47,17 +48,162 @@ THUMB_CACHE_LIMIT = 400
 THUMB_WIDTHS = (128, 256, 512)
 
 
+HISTORY_FILENAME = "roots.json"
+
+
+def history_path() -> Path:
+    return Path.home() / ".kurator" / HISTORY_FILENAME
+
+
+def read_history() -> list[str]:
+    path = history_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [p for p in payload if isinstance(p, str)]
+
+
+def remember_root(root: Path) -> None:
+    target = history_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    key = str(root)
+    history = [p for p in read_history() if p != key]
+    history.insert(0, key)
+    target.write_text(json.dumps(history[:20], ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+BLOCKED_ROOTS = {
+    "/", "/bin", "/boot", "/dev", "/etc", "/lib", "/private", "/proc",
+    "/sbin", "/System", "/sys", "/usr", "/var",
+}
+
+
+def too_broad(path: Path) -> bool:
+    """Корень, где kurator бессмысленно полезет по всей системе."""
+    if str(path) in BLOCKED_ROOTS:
+        return True
+    return not any(path.iterdir()) if path.is_dir() else False
+
+
+def index_status(path: Path) -> dict | None:
+    """Что уже известно про папку. Только чтение, ничего не считаем."""
+    db = path / ".kurator" / "index.db"
+    if not db.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
+        try:
+            files = int(conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0])
+            embedded = int(
+                conn.execute("SELECT COUNT(*) FROM photos WHERE embed IS NOT NULL").fetchone()[0]
+            )
+            skipped = int(
+                conn.execute("SELECT COUNT(*) FROM decisions WHERE action='skip'").fetchone()[0]
+            )
+            row = conn.execute("SELECT v FROM meta WHERE k='last_index_at'").fetchone()
+            last = int(row[0]) if row and str(row[0]).isdigit() else None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return {"files": files, "embedded": embedded, "skipped": skipped, "last_index_at": last}
+
+
+def candidate_roots() -> list[dict]:
+    """Что имеет смысл предложить выбрать: история, типовые папки, диски."""
+    seen: set[str] = set()
+    out: list[dict] = []
+
+    def add(path: Path, kind: str) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            return
+        key = str(resolved)
+        if key in seen or key in BLOCKED_ROOTS:
+            return
+        if not resolved.is_dir():
+            return
+        seen.add(key)
+        entry = {"path": key, "kind": kind}
+        status = index_status(resolved)
+        if status:
+            entry["index"] = status
+        out.append(entry)
+
+    for remembered in read_history():
+        add(Path(remembered), "недавний")
+
+    home = Path.home()
+    for name in ("Pictures", "Фото", "Photos", "Downloads", "Desktop", "Documents"):
+        add(home / name, "домашняя папка")
+    add(home, "домашняя папка")
+
+    for entry in sorted(home.glob("*[.]?*[Dd]isk*")) + sorted(home.glob("*Облак*")):
+        add(entry, "облачный диск")
+
+    volumes = Path("/Volumes")
+    if volumes.is_dir():
+        for entry in sorted(volumes.iterdir()):
+            add(entry, "диск")
+
+    if home.is_dir():
+        try:
+            images = 0
+            for entry in home.iterdir():
+                if entry.is_dir():
+                    images += sum(1 for _ in entry.glob("*.jpg"))
+            if images:
+                add(home, "домашняя папка")
+        except OSError:
+            pass
+
+    return out
+
+
 class State:
     def __init__(self, root: Path, model_path: Path) -> None:
-        self.root = root.resolve()
         self.model_path = model_path
-        self.store = Store.open(self.root)
         self.token = secrets.token_urlsafe(24)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.encoder: SiglipVision | None = None
         self.job: dict | None = None
         self.thumbs: OrderedDict[tuple[str, int], bytes] = OrderedDict()
         self._stop = threading.Event()
+        self.root = root.resolve()
+        self.store = Store.open(self.root)
+
+    def switch_root(self, path: Path) -> dict:
+        """Смена папки: другое дерево, другая база, чистый кэш превью."""
+        resolved = path.expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError(f"нет такой папки: {resolved}")
+        if too_broad(resolved):
+            raise ValueError(
+                f"{resolved} — слишком широкая папка, kurator обошёл бы её целиком. "
+                "Укажите папку с фотографиями."
+            )
+        with self.lock:
+            if self.job and self.job.get("status") == "running":
+                raise ValueError("сейчас идёт индексация, дождись окончания")
+            previous = self.store
+            try:
+                store = Store.open(resolved)
+            except Exception:
+                previous.close()
+                raise
+            self.root = resolved
+            self.store = store
+            self.thumbs.clear()
+            self.job = None
+        try:
+            previous.close()
+        except Exception:
+            pass
+        remember_root(resolved)
+        return {"root": str(resolved), "files": self.store.count(),
+                "embedded": self.store.embedded_count()}
 
     def close(self) -> None:
         self._stop.set()
@@ -257,8 +403,8 @@ class Handler(BaseHTTPRequestHandler):
                         "present": self.state.embedder_available(),
                     },
                     "defaults": {
-                        "phash": NEAR_DUP_PHASH_DISTANCE,
-                        "cosine": NEAR_DUP_COSINE_STRONG,
+                        "phash": float(store.get_meta("tuning.phash", NEAR_DUP_PHASH_DISTANCE)),
+                        "cosine": float(store.get_meta("tuning.cosine", NEAR_DUP_COSINE_STRONG)),
                         "cluster": CLUSTER_COSINE,
                         "batch": BATCH_SIZE,
                     },
@@ -268,6 +414,10 @@ class Handler(BaseHTTPRequestHandler):
                     "job": self.state.job,
                 }
             )
+            return
+
+        if route == "/api/roots":
+            self._json({"suggestions": candidate_roots(), "current": str(self.state.root)})
             return
 
         if route == "/api/job":
@@ -344,9 +494,33 @@ class Handler(BaseHTTPRequestHandler):
 
         route = parsed.path
 
+        if route == "/api/root":
+            target = (body.get("path") or "").strip()
+            if not target:
+                self._json({"error": "не указан путь"}, 400)
+                return
+            try:
+                info = self.state.switch_root(Path(target))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            job = _start_index(self.state, rehash=bool(body.get("rehash")))
+            self._json({**info, "job": job})
+            return
+
         if route == "/api/index":
             job = _start_index(self.state, rehash=bool(body.get("rehash")))
             self._json(job)
+            return
+
+        if route == "/api/tuning":
+            store = self.state.store
+            if body.get("phash") is not None:
+                store.set_meta("tuning.phash", str(float(body["phash"])))
+            if body.get("cosine") is not None:
+                store.set_meta("tuning.cosine", str(float(body["cosine"])))
+            store.commit()
+            self._json({"saved": True})
             return
 
         if route == "/api/report":
@@ -463,11 +637,36 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
 
-def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+def last_root() -> Path | None:
+    """Папка из прошлой сессии, если она ещё на месте."""
+    for remembered in read_history():
+        path = Path(remembered)
+        if path.is_dir() and not too_broad(path):
+            return path
+    return None
+
+
+def default_root() -> tuple[Path, str]:
+    """Кем заменить папку, если её не сказали и прошлой сессии не было."""
+    remembered = last_root()
+    if remembered is not None:
+        return remembered, "из прошлой сессии"
+    pictures = Path.home() / "Pictures"
+    if pictures.is_dir():
+        return pictures, "домашняя папка с фотографиями"
+    return Path.home(), "домашняя папка"
+
+
+def serve(root: Path | None, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+    if root is None:
+        root, source = default_root()
+    else:
+        source = "из командной строки"
     model_path = default_model_path()
     if model_path.is_dir():
         model_path = model_path / MODEL_FILENAME
     state = State(root, model_path)
+    remember_root(state.root)
 
     handler = type("BoundHandler", (Handler,), {"state": state})
     httpd = ThreadingHTTPServer((host, port), handler)
@@ -475,7 +674,7 @@ def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: b
 
     url = f"http://{host}:{port}/?token={state.token}"
     print(f"kurator {__version__}")
-    print(f"корень : {state.root}")
+    print(f"корень : {state.root}  ({source})")
     print(f"модель : {model_path} {'(на месте)' if state.embedder_available() else '(нет: только хеши)'}")
     print(f"открываю {url}")
     print("Ctrl+C — остановить")

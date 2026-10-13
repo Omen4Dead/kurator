@@ -1,4 +1,5 @@
 import datetime as dt
+from pathlib import Path
 
 from kurator.db import Store
 from kurator.quarantine import apply_moves, plan_moves, quarantine_root, undo_last_run
@@ -118,3 +119,84 @@ def test_apply_updates_index(tmp_path):
     assert "b.txt" not in paths
     assert "a.txt" in paths
     store.close()
+
+def test_history_remembers_last_roots(tmp_path, monkeypatch):
+    from kurator.web import server as web
+
+    monkeypatch.setattr(web, "history_path", lambda: tmp_path / "roots.json")
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+    web.remember_root(tmp_path / "one")
+    web.remember_root(tmp_path / "two")
+    web.remember_root(tmp_path / "one")
+
+    history = web.read_history()
+    assert history[0].endswith("one")
+    assert len(history) == 2, "повторный выбор не должен дублировать запись"
+
+
+def test_last_root_skips_missing_and_broad(tmp_path, monkeypatch):
+    from kurator.web import server as web
+
+    monkeypatch.setattr(web, "history_path", lambda: tmp_path / "roots.json")
+    (tmp_path / "good").mkdir()
+    (tmp_path / "good" / "a.jpg").write_bytes(b"x")
+    web.remember_root(tmp_path / "good")
+    web.remember_root(tmp_path / "vanished")
+
+    found = web.last_root()
+    assert found is not None and found.name == "good"
+
+
+def test_index_status_reads_existing_db(tmp_path):
+    from PIL import Image
+
+    from kurator.config import db_path
+    from kurator.web.server import index_status
+
+    assert index_status(tmp_path) is None
+
+    store = Store.open(tmp_path)
+    photo = tmp_path / "a.jpg"
+    Image.new("RGB", (32, 32), (10, 20, 30)).save(photo, "JPEG")
+    info = photo.stat()
+    from kurator.db import Photo
+
+    store.upsert(Photo(rel_path="a.jpg", size=info.st_size, mtime=info.st_mtime, md5="m"))
+    store.set_meta("last_index_at", "1700000000")
+    store.commit()
+    store.close()
+
+    status = index_status(tmp_path)
+    assert status is not None
+    assert status["files"] == 1
+    assert status["last_index_at"] == 1700000000
+    assert db_path(tmp_path).is_file()
+
+
+def test_index_status_survives_missing_meta(tmp_path):
+    """Индекс без строки last_index_at — обычное дело, читать его всё равно надо."""
+    from PIL import Image
+
+    from kurator.db import Photo
+    from kurator.web.server import index_status
+
+    store = Store.open(tmp_path)
+    photo = tmp_path / "a.jpg"
+    Image.new("RGB", (16, 16), (1, 2, 3)).save(photo, "JPEG")
+    info = photo.stat()
+    store.upsert(Photo(rel_path="a.jpg", size=info.st_size, mtime=info.st_mtime, md5="m"))
+    store.commit()
+    store.close()
+
+    status = index_status(tmp_path)
+    assert status is not None
+    assert status["files"] == 1
+    assert status["last_index_at"] is None
+
+
+def test_blocked_roots_are_rejected():
+    from kurator.web.server import too_broad
+
+    assert too_broad(Path("/")) is True
+    assert too_broad(Path("/System")) is True

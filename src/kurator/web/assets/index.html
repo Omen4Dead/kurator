@@ -10,7 +10,7 @@
 <header>
   <div class="brand">
     <span class="logo">kurator</span>
-    <span class="root" id="root">…</span>
+    <button class="root" id="btn-root" title="Сменить папку с фотографиями">…</button>
   </div>
   <div class="stats" id="stats">загружаю…</div>
 </header>
@@ -60,6 +60,19 @@
   <div class="fill" id="progress-fill"></div>
   <span id="progress-text"></span>
 </section>
+
+<dialog id="picker">
+  <h2>Папка с фотографиями</h2>
+  <p class="muted">После смены папки индекс будет построен заново для неё.</p>
+  <div class="picker-list" id="picker-list"></div>
+  <div class="picker-manual">
+    <input type="text" id="picker-path" placeholder="или вставьте путь к папке" spellcheck="false">
+    <button id="picker-go" class="primary">Перейти</button>
+  </div>
+  <div class="dialog-actions">
+    <button id="picker-cancel" class="ghost">Отмена</button>
+  </div>
+</dialog>
 
 <dialog id="rehash">
   <h2>Пересчитать всё заново</h2>

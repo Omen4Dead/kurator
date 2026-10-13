@@ -71,7 +71,7 @@ function toggle(group, path) {
 async function loadState() {
   const data = await api("/api/state");
   state.root = data.root;
-  $("root").textContent = data.root;
+  $("btn-root").textContent = data.root;
   $("stats").textContent =
     `${data.files} файлов · ${fmtBytes(data.bytes)} · эмбеддингов ${data.embedded}/${data.files} · ` +
     `модель ${data.model.present ? "на месте" : "нет (только хеши)"}` +
@@ -242,6 +242,64 @@ document.addEventListener("click", (event) => {
   if (role === "reset") { state.selected.delete(key); render(); return; }
 });
 
+$("btn-root").onclick = async () => {
+  try {
+    const data = await api("/api/roots");
+    const current = data.current;
+    $("picker-list").innerHTML = data.suggestions.map((sug) => {
+      const active = sug.path === current ? " current" : "";
+      let note = sug.kind;
+      if (sug.index) {
+        const when = sug.index.last_index_at
+          ? new Date(sug.index.last_index_at * 1000).toLocaleString("ru-RU",
+              { dateStyle: "short", timeStyle: "short" })
+          : "дата неизвестна";
+        note = `индекс: ${sug.index.files} файлов · ${when}`;
+      } else {
+        note = `${sug.kind} · ещё не индексирована`;
+      }
+      return `<button class="sug${active}" data-path="${escapeHtml(sug.path)}">
+        <span class="sugpath">${escapeHtml(sug.path)}</span>
+        <span class="sugkind">${escapeHtml(note)}</span>
+      </button>`;
+    }).join("");
+    $("picker-path").value = current;
+    $("picker").showModal();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+$("picker-cancel").onclick = () => $("picker").close();
+
+$("picker-list").addEventListener("click", (event) => {
+  const button = event.target.closest(".sug");
+  if (button) switchRoot(button.dataset.path);
+});
+
+$("picker-path").onkeydown = (event) => {
+  if (event.key === "Enter") { event.preventDefault(); switchRoot($("picker-path").value); }
+};
+
+$("picker-go").onclick = () => switchRoot($("picker-path").value);
+
+async function switchRoot(path) {
+  if (!path) return;
+  try {
+    $("picker-go").disabled = true;
+    await api("/api/root", { method: "POST", body: JSON.stringify({ path }) });
+    $("picker").close();
+    state.selected.clear();
+    toast(`папка сменена, запускаю индексацию`);
+    await loadState();
+    await pollJob();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    $("picker-go").disabled = false;
+  }
+}
+
 $("btn-index").onclick = async () => {
   await api("/api/index", { method: "POST", body: JSON.stringify({}) });
   pollJob();
@@ -268,8 +326,19 @@ $("rehash-confirm").onclick = async () => {
 
 $("phash").oninput = (e) => { e.target.dataset.touched = "1"; };
 $("cosine").oninput = (e) => { e.target.dataset.touched = "1"; };
-$("phash").onchange = loadFindings;
-$("cosine").onchange = loadFindings;
+async function saveTuning() {
+  try {
+    await api("/api/tuning", {
+      method: "POST",
+      body: JSON.stringify({ phash: +$("phash").value, cosine: +$("cosine").value }),
+    });
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+$("phash").onchange = () => { saveTuning(); loadFindings(); };
+$("cosine").onchange = () => { saveTuning(); loadFindings(); };
 
 document.querySelectorAll(".tabs button").forEach((button) => {
   button.onclick = () => {

@@ -5,7 +5,10 @@ body { margin:0; background:var(--bg); color:var(--fg);
 header { display:flex; align-items:baseline; gap:18px; padding:16px 24px; border-bottom:1px solid var(--line); }
 .brand { display:flex; align-items:baseline; gap:12px; }
 .logo { font-size:20px; font-weight:600; letter-spacing:-.3px; }
-.root { color:var(--muted); font-size:13px; }
+button.root { color:var(--muted); font-size:13px; background:none; border:1px solid transparent;
+  padding:3px 8px; border-radius:6px; max-width:38vw; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+button.root:hover { color:var(--fg); border-color:var(--line); background:#1f1f23; }
 .stats { margin-left:auto; color:var(--muted); font-size:13px; }
 .bar { display:flex; align-items:center; gap:8px; padding:12px 24px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
 .bar button { padding:7px 11px; }
@@ -71,6 +74,16 @@ main { padding:18px 24px 60px; }
 .card-actions .pickcount { color:var(--muted); font-size:13px; margin-right:auto; }
 .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
   background:#27272a; color:var(--muted); margin-left:8px; }
+.picker-list { display:flex; flex-direction:column; gap:2px; max-height:42vh; overflow:auto;
+  margin:12px 0; }
+.sug { display:flex; align-items:baseline; gap:10px; width:100%; text-align:left; padding:8px 10px; }
+.sug:hover { background:#27272a; border-color:#4b4b55; }
+.sug.current { border-color:var(--accent); }
+.sugpath { font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sug.current .sugkind { color:var(--accent); }
+.sugkind { margin-left:auto; font-size:11.5px; color:#71717a; flex:none; }
+.picker-manual { display:flex; gap:8px; }
+.picker-manual input { flex:1; min-width:0; }
 dialog { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:14px;
   max-width:min(760px,92vw); padding:20px; }
 dialog::backdrop { background:rgba(0,0,0,.6); }

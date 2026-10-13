@@ -48,6 +48,21 @@ def download_model(path: Path, url: str = MODEL_URL, sha256: str = MODEL_SHA256)
     return path
 
 
+def fingerprint(path: Path) -> str:
+    """Отпечаток файла модели: та же сеть — тот же отпечаток."""
+    import hashlib
+
+    size = path.stat().st_size
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            block = fh.read(1 << 22)
+            if not block:
+                break
+            digest.update(block)
+    return f"{size}:{digest.hexdigest()[:32]}"
+
+
 class SiglipVision:
     def __init__(self, model_path: Path, threads: int | None = None) -> None:
         if not model_is_present(model_path):
@@ -63,6 +78,8 @@ class SiglipVision:
         self.input_name = self.session.get_inputs()[0].name
         self.output_names = [o.name for o in self.session.get_outputs()]
         self.output_name = OUTPUT_NAME if OUTPUT_NAME in self.output_names else self.output_names[-1]
+        self.path = Path(model_path)
+        self.fingerprint = fingerprint(self.path)
         self.dim = self._probe_dim()
 
     def _probe_dim(self) -> int:
