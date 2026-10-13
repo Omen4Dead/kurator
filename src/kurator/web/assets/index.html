@@ -10,7 +10,11 @@
 <header>
   <div class="brand">
     <span class="logo">kurator</span>
-    <button class="root" id="btn-root" title="Сменить папку с фотографиями">…</button>
+    <button class="root" id="btn-root" title="Сменить папку с фотографиями">
+      <span class="rooticon" aria-hidden="true"></span>
+      <span class="rootpath" id="rootpath">…</span>
+      <span class="rootchev" aria-hidden="true">сменить</span>
+    </button>
   </div>
   <div class="stats" id="stats">загружаю…</div>
 </header>
@@ -47,13 +51,16 @@
       </span>
     </div>
 
+    <button id="btn-factory" class="linklike" title="Вернуть заводские значения">
+      сбросить</button>
     <span class="params-note">Оба меняют строгость,
       но в разные стороны</span>
   </div>
   <span class="spacer"></span>
   <button id="btn-report" class="ghost">Отчёт</button>
-  <button id="btn-reset" class="ghost">Снять все отметки</button>
-  <button id="btn-undo" class="ghost">Откатить</button>
+  <button id="btn-reset" class="ghost">Снять галочки</button>
+  <button id="btn-unskip" class="ghost">Вернуть пропущенные</button>
+  <button id="btn-undo" class="ghost">Вернуть из карантина</button>
 </section>
 
 <section class="progress" id="progress" hidden>

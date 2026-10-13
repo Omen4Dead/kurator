@@ -3,10 +3,12 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   tab: "exact",
+  factory: { phash: 4, cosine: 0.9 },
   groups: [],
   clusters: [],
   root: "",
   selected: new Map(),
+  strips: [],
   jobTimer: null,
 };
 
@@ -47,8 +49,12 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
-function groupKey(group, index) {
+function groupKeyOf(group) {
   return `${group.kind}:${group.members[0]}:${group.members.length}`;
+}
+
+function groupKey(group) {
+  return groupKeyOf(group);
 }
 
 function isSelected(group, path) {
@@ -71,7 +77,7 @@ function toggle(group, path) {
 async function loadState() {
   const data = await api("/api/state");
   state.root = data.root;
-  $("btn-root").textContent = data.root;
+  $("rootpath").textContent = data.root;
   $("stats").textContent =
     `${data.files} файлов · ${fmtBytes(data.bytes)} · эмбеддингов ${data.embedded}/${data.files} · ` +
     `модель ${data.model.present ? "на месте" : "нет (только хеши)"}` +
@@ -82,6 +88,7 @@ async function loadState() {
     ? new Date(data.last_index_at * 1000).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })
     : "ни разу";
   $("indexnote").textContent = `последний проход: ${when}`;
+  if (data.factory) state.factory = data.factory;
   if (data.job && data.job.status === "running") pollJob();
 }
 
@@ -150,6 +157,43 @@ function tile(group, file) {
   </div>`;
 }
 
+function stripCard(strip) {
+  return `<div class="card moved" data-run="${strip.run_id}">
+    <div class="strip">
+      <span class="stripdone">перенесено в карантин</span>
+      <span class="striptitle">${escapeHtml(strip.title)}</span>
+      <span class="stripmeta">${strip.paths.length} файл(ов) · ${fmtBytes(strip.bytes)}</span>
+      <button class="ghost" data-role="restore" data-run="${strip.run_id}">Вернуть</button>
+    </div>
+  </div>`;
+}
+
+async function refreshSituation() {
+  const hasSkipped = (await api("/api/state")).skipped || 0;
+  $("btn-unskip").hidden = !hasSkipped;
+  $("btn-unskip").textContent = hasSkipped ? `Вернуть пропущенные (${hasSkipped})` : "Вернуть пропущенные";
+}
+
+async function loadStrips() {
+  try {
+    const { runs } = await api("/api/runs");
+    $("btn-undo").hidden = !runs.length;
+    $("btn-undo").textContent = runs.length
+      ? `Вернуть из карантина (${runs.length})` : "Вернуть из карантина";
+    state.strips = runs
+      .filter((r) => r.kind === "by-hand" && r.paths.length)
+      .map((r) => ({
+        run_id: r.run_id,
+        paths: r.paths,
+        title: r.paths[0].split("/").pop(),
+        bytes: r.bytes || 0,
+      }));
+  } catch (err) {
+    state.strips = [];
+    $("btn-undo").hidden = true;
+  }
+}
+
 function groupCard(group, index) {
   const chosen = isSelected(group);
   const paths = group.files.map((f) => f.path);
@@ -197,14 +241,31 @@ function render() {
   }
   const total = groups.reduce((sum, g) =>
     sum + g.files.filter((f) => isSelected(g).includes(f.path)).reduce((s, f) => s + f.size, 0), 0);
-  main.innerHTML = `<p class="meta">${groups.length} групп · отмечено на ${fmtBytes(total)}.
+  const strips = state.strips.map(stripCard).join("");
+  const cards = groups.map((g, i) => groupCard(g, i));
+  main.innerHTML = (strips ? `<div class="strips">${strips}</div>` : "") +
+    `<p class="meta">${groups.length} групп · отмечено на ${fmtBytes(total)}.
     Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить
     другой кадр вместо отмеченного, снимите ✓ здесь и поставьте там.</p>` +
-    groups.map(groupCard).join("");
+    cards.join("");
 }
 
 function findGroupByKey(key) {
   return state.groups.find((g) => groupKey(g) === key);
+}
+
+function groupKey(paths) {
+  const first = paths[0] || "";
+  const hit = state.groups.find((g) => g.members.includes(first));
+  return hit ? groupKeyOf(hit) : "";
+}
+
+function groupTitle(paths) {
+  const first = paths[0] || "";
+  const folder = first.split("/").slice(0, -1).join("/");
+  const hit = state.groups.find((g) => g.members.includes(first));
+  if (hit) return hit.keeper || hit.members[0];
+  return folder || first;
 }
 
 async function decide(paths, action) {
@@ -218,11 +279,43 @@ async function decide(paths, action) {
       toast(`burst-кадры не трогаю: ${result.blocked.length} пропущено`, true);
     }
     if (action === "remove") {
-      toast(`перенесено ${result.moved ?? 0}. Откат — кнопка «Откатить».`);
+      const paths = result.paths || [];
+      if (result.run_id) {
+        const group = findGroupByKey(groupKey(paths));
+        const bytes = group
+          ? group.files.filter((f) => paths.includes(f.path))
+                       .reduce((sum, f) => sum + (f.size || 0), 0)
+          : (result.bytes || 0);
+        state.strips.unshift({
+          run_id: result.run_id,
+          paths,
+          title: (groupTitle(paths) || paths[0] || "").split("/").pop(),
+          bytes,
+        });
+      }
+      render();
+      toast(`перенесено ${result.moved ?? 0}. Полоса с кнопкой «Вернуть» — сверху.`);
     } else {
       toast(`пропущено ${result.skipped ?? 0}`);
     }
     await loadState();
+    await refreshSituation();
+    await loadFindings();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function restoreRun(runId) {
+  try {
+    const result = await api("/api/restore", {
+      method: "POST", body: JSON.stringify({ run_id: Number(runId) }),
+    });
+    state.strips = state.strips.filter((s) => String(s.run_id) !== String(runId));
+    toast(result.message ? result.message : `возвращено ${result.moved ?? 0}`);
+    await loadState();
+    await loadStrips();
+    await refreshSituation();
     await loadFindings();
   } catch (err) {
     toast(err.message, true);
@@ -232,7 +325,10 @@ async function decide(paths, action) {
 document.addEventListener("click", (event) => {
   const node = event.target.closest("[data-role]");
   if (!node) return;
-  const { role, key, path } = node.dataset;
+  const { role, key, path, run } = node.dataset;
+
+  if (role === "restore") { restoreRun(run); return; }
+
   const group = findGroupByKey(key);
   if (!group) return;
 
@@ -363,12 +459,46 @@ $("btn-report").onclick = async () => {
   }
 };
 
-$("btn-reset").onclick = async () => {
+$("btn-factory").onclick = async () => {
+  const { phash, cosine } = state.factory;
+  const nowP = $("phash").value;
+  const nowC = $("cosine").value;
+  if (String(+nowP) === String(phash) && String(+nowC) === String(cosine)) {
+    toast("уже заводские значения");
+    return;
+  }
+  $("phash").value = phash;
+  $("cosine").value = cosine;
+  delete $("phash").dataset.touched;
+  delete $("cosine").dataset.touched;
+  try {
+    await api("/api/tuning", { method: "POST", body: JSON.stringify({ phash, cosine }) });
+    toast(`сброшено к ${phash} и ${cosine}`);
+    await loadFindings();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+$("btn-reset").onclick = () => {
+  const groups = state.groups.filter((g) => g.kind === state.tab);
+  let touched = 0;
+  for (const group of groups) {
+    const key = groupKey(group);
+    if (!state.selected.has(key)) continue;
+    touched += state.selected.get(key).length;
+    state.selected.delete(key);
+  }
+  render();
+  toast(touched ? `снято галочек: ${touched}` : "галочек и не было стояло");
+};
+
+$("btn-unskip").onclick = async () => {
   try {
     const result = await api("/api/decide", {
       method: "POST", body: JSON.stringify({ action: "clear", paths: ["-"] }),
     });
-    toast(`снято отметок: ${result.cleared}`);
+    toast(result.cleared ? `вернулось пропущенных: ${result.cleared}` : "пропущенных не было");
     await loadState();
     await loadFindings();
   } catch (err) {
@@ -377,11 +507,19 @@ $("btn-reset").onclick = async () => {
 };
 
 $("btn-undo").onclick = async () => {
-  if (!confirm("Вернуть файлы из последнего карантина на место?")) return;
+  try {
+    const runs = (await api("/api/runs")).runs;
+    if (!runs.length) { toast("в карантине пусто, возвращать нечего"); return; }
+  } catch (err) {
+    toast(err.message, true);
+    return;
+  }
+  if (!confirm("Вернуть из карантина последний перенос?")) return;
   try {
     const result = await api("/api/undo", { method: "POST", body: "{}" });
     toast(result.message ? result.message : `возвращено ${result.moved}`);
     await loadState();
+    await loadStrips();
     await loadFindings();
   } catch (err) {
     toast(err.message, true);
@@ -389,5 +527,6 @@ $("btn-undo").onclick = async () => {
 };
 
 loadState()
-  .then(loadFindings)
+  .then(() => Promise.all([loadFindings(), loadStrips(), refreshSituation()]))
+  .then(() => render())
   .catch((err) => toast(err.message, true));

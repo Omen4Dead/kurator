@@ -408,6 +408,10 @@ class Handler(BaseHTTPRequestHandler):
                         "cluster": CLUSTER_COSINE,
                         "batch": BATCH_SIZE,
                     },
+                    "factory": {
+                        "phash": float(NEAR_DUP_PHASH_DISTANCE),
+                        "cosine": float(NEAR_DUP_COSINE_STRONG),
+                    },
                     "quarantine": QUARANTINE_DIRNAME,
                     "skipped": len(store.skipped()),
                     "last_index_at": store.get_meta("last_index_at"),
@@ -511,6 +515,23 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/index":
             job = _start_index(self.state, rehash=bool(body.get("rehash")))
             self._json(job)
+            return
+
+        if route == "/api/runs":
+            from ..quarantine import list_runs
+
+            self._json({"runs": list_runs(self.state.store)})
+            return
+
+        if route == "/api/restore":
+            from ..quarantine import undo_run
+
+            run_id = body.get("run_id")
+            if run_id is None:
+                self._json({"error": "не указан перенос"}, 400)
+                return
+            result = undo_run(self.state.store, int(run_id))
+            self._json(result)
             return
 
         if route == "/api/tuning":
