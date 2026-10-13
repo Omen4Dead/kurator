@@ -41,6 +41,12 @@ CREATE INDEX IF NOT EXISTS idx_photos_md5   ON photos(md5);
 CREATE INDEX IF NOT EXISTS idx_photos_phash ON photos(phash);
 CREATE INDEX IF NOT EXISTS idx_photos_embed ON photos(embed_model);
 
+CREATE TABLE IF NOT EXISTS decisions (
+    rel_path   TEXT PRIMARY KEY,
+    action     TEXT    NOT NULL,
+    created_at REAL    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
@@ -252,6 +258,53 @@ class Store:
         if not vectors:
             return ids, paths, np.zeros((0, 1), dtype=np.float32)
         return ids, paths, np.vstack(vectors)
+
+    def record_decision(self, rel_paths: list[str], action: str) -> int:
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO decisions(rel_path, action, created_at) VALUES(?,?,?) "
+                "ON CONFLICT(rel_path) DO UPDATE SET action=excluded.action, "
+                "created_at=excluded.created_at",
+                [(rel, action, time.time()) for rel in rel_paths],
+            )
+        return len(rel_paths)
+
+    def skipped(self) -> set[str]:
+        rows = self.query("SELECT rel_path FROM decisions WHERE action='skip'")
+        return {r["rel_path"] for r in rows}
+
+    def decided(self) -> set[str]:
+        rows = self.query("SELECT rel_path FROM decisions WHERE action='remove'")
+        return {r["rel_path"] for r in rows}
+
+    def all_decisions(self) -> list[dict]:
+        return [
+            {"rel_path": r["rel_path"], "action": r["action"], "created_at": r["created_at"]}
+            for r in self.query("SELECT * FROM decisions ORDER BY created_at")
+        ]
+
+    def clear_decisions(self, action: str | None = None) -> int:
+        with self.lock:
+            if action:
+                cur = self.conn.execute("DELETE FROM decisions WHERE action=?", (action,))
+            else:
+                cur = self.conn.execute("DELETE FROM decisions")
+            self.conn.commit()
+        return cur.rowcount
+
+    def drop_decisions(self, rel_paths: list[str]) -> None:
+        if not rel_paths:
+            return
+        with self.lock:
+            self.conn.executemany(
+                "DELETE FROM decisions WHERE rel_path=?", ((rel,) for rel in rel_paths)
+            )
+
+    def backfill_paths(self, root: Path, rel_paths: list[str]) -> int:
+        """Вернуть в индекс файлы, которые только что вернули из карантина."""
+        from .indexer import index_paths
+
+        return index_paths(root, self, rel_paths)
 
     def start_run(self, kind: str, manifest: Path) -> int:
         with self.lock:

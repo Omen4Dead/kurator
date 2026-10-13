@@ -40,15 +40,21 @@ def index_root(
     encoder: SiglipVision | None = None,
     rehash: bool = False,
     progress: Callable[[str], None] | None = None,
+    known_override: dict | None = None,
+    only_paths: set[str] | None = None,
 ) -> dict[str, int]:
     root = root.resolve()
     stats = {"seen": 0, "indexed": 0, "skipped": 0, "embedded": 0, "unreadable": 0, "removed": 0}
     known = {} if rehash else store.known_state()
+    if known_override:
+        known = known_override
 
     present: set[str] = set()
     pending: list[tuple[str, Path]] = []
 
     for rel, path in walk_media(root):
+        if only_paths is not None and rel not in only_paths:
+            continue
         stats["seen"] += 1
         present.add(rel)
         try:
@@ -155,6 +161,23 @@ def backfill_embeddings(
         if progress:
             progress(f"  эмбеддинги {done}/{len(rows)}")
     return done
+
+
+def index_paths(root: Path, store: Store, rel_paths: list[str]) -> int:
+    """Доиндексировать конкретные файлы: хеши, EXIF и эмбеддинги."""
+    root = root.resolve()
+    store.forget(rel_paths)
+    known = store.known_state()
+    present = {rel: root / rel for rel in rel_paths if (root / rel).is_file()}
+    stats = index_root(
+        root,
+        store,
+        encoder=None,
+        rehash=False,
+        known_override={rel: (known[rel][0], known[rel][1]) for rel in present if rel in known},
+        only_paths=set(present),
+    )
+    return stats["indexed"]
 
 
 def encoder_or_none(model_path: Path, allow_download: bool) -> SiglipVision | None:

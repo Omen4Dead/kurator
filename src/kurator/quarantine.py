@@ -124,4 +124,6 @@ def undo_last_run(store: Store) -> dict:
         pass
 
     store.delete_run(int(row["id"]))
+    if restored:
+        store.backfill_paths(root, restored)
     return {"moved": len(restored), "missing": missing}

@@ -6,6 +6,7 @@ const state = {
   groups: [],
   clusters: [],
   root: "",
+  selected: new Map(),
   jobTimer: null,
 };
 
@@ -14,11 +15,11 @@ async function api(path, options = {}) {
     ...options,
     headers: { "X-Kurator-Token": TOKEN, "Content-Type": "application/json", ...(options.headers || {}) },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text.slice(0, 200)}`);
-  }
-  return res.json();
+  const text = await res.text();
+  let payload = {};
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  if (!res.ok) throw new Error(payload.error || payload.raw || `${res.status}`);
+  return payload;
 }
 
 function fmtBytes(n) {
@@ -42,13 +43,47 @@ function thumb(path, w = 256) {
   return `/api/thumb?token=${TOKEN}&path=${encodeURIComponent(path)}&w=${w}`;
 }
 
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function groupKey(group, index) {
+  return `${group.kind}:${group.members[0]}:${group.members.length}`;
+}
+
+function isSelected(group, path) {
+  const key = groupKey(group);
+  if (!state.selected.has(key)) {
+    return group.files.filter((f) => f.role !== "keeper").map((f) => f.path);
+  }
+  return state.selected.get(key);
+}
+
+function toggle(group, path) {
+  const key = groupKey(group);
+  const current = new Set(isSelected(group, path));
+  if (current.has(path)) current.delete(path);
+  else current.add(path);
+  state.selected.set(key, [...current].filter((p) => group.files.some((f) => f.path === p)));
+  render();
+}
+
+function setKeeper(group, path) {
+  state.selected.set(
+    groupKey(group),
+    group.files.filter((f) => f.path !== path).map((f) => f.path),
+  );
+  render();
+}
+
 async function loadState() {
   const data = await api("/api/state");
   state.root = data.root;
   $("root").textContent = data.root;
   $("stats").textContent =
     `${data.files} файлов · ${fmtBytes(data.bytes)} · эмбеддингов ${data.embedded}/${data.files} · ` +
-    `модель ${data.model.present ? "на месте" : "нет (только хеши)"}`;
+    `модель ${data.model.present ? "на месте" : "нет (только хеши)"}` +
+    (data.skipped ? ` · пропущено ${data.skipped}` : "");
   if (!$("phash").dataset.touched) $("phash").value = data.defaults.phash;
   if (!$("cosine").dataset.touched) $("cosine").value = data.defaults.cosine;
   if (data.job && data.job.status === "running") pollJob();
@@ -75,11 +110,7 @@ async function pollJob() {
       state.jobTimer = setTimeout(pollJob, 700);
       return;
     }
-    if (job.status === "error") {
-      toast(`ошибка: ${job.error}`, true);
-      idle();
-      return;
-    }
+    if (job.status === "error") { toast(`ошибка: ${job.error}`, true); idle(); return; }
     const s = job.stats || {};
     toast(`готово: ${s.seen} просмотрено, ${s.indexed} новых, эмбеддингов ${s.embedded}`);
     idle();
@@ -92,45 +123,55 @@ async function pollJob() {
 }
 
 async function loadFindings() {
-  const phash = $("phash").value;
-  const cosine = $("cosine").value;
   try {
-    const data = await api(`/api/findings?phash=${phash}&cosine=${cosine}`);
+    const data = await api(`/api/findings?phash=${$("phash").value}&cosine=${$("cosine").value}`);
     state.groups = data.groups || [];
     state.clusters = data.clusters || [];
+    state.selected.clear();
     render();
   } catch (err) {
     toast(err.message, true);
   }
 }
 
-function tile(file, keeper) {
-  const role = file.role || "member";
-  const label = role === "keeper" ? "оставляю" : role === "victim" ? "кандидат" : "в группе";
+function tile(group, file) {
+  const key = groupKey(group);
+  const path = escapeHtml(file.path);
+  const selected = isSelected(group, file.path).includes(file.path);
+  const isKeeper = !selected && file.role === "keeper";
   const size = file.size === null || file.size === undefined ? "" : ` · ${fmtBytes(file.size)}`;
-  return `<div class="tile ${role === "keeper" ? "keeper" : ""}">
+  const when = file.taken_at ? file.taken_at.slice(0, 10) : "";
+  return `<div class="tile ${selected ? "picked" : ""}">
+    <button class="pick" data-role="toggle" data-key="${escapeHtml(key)}" data-path="${path}"
+            title="${selected ? "Снять отметку" : "Отметить для переноса"}">${selected ? "✓" : ""}</button>
+    <button class="keepmark ${isKeeper ? "on" : ""}" data-role="star" data-key="${escapeHtml(key)}"
+            data-path="${path}" title="Оставить этот кадр, остальные перенести">★</button>
     <a href="${thumb(file.path, 512)}" target="_blank"><img src="${thumb(file.path)}" loading="lazy" alt=""></a>
     <div class="name">${escapeHtml(file.path.split("/").pop())}</div>
-    <div class="role ${role === "victim" ? "victim" : ""}">${label}${size}</div>
+    <div class="meta">${escapeHtml(when)}${size}</div>
   </div>`;
 }
 
-function escapeHtml(text) {
-  return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-
 function groupCard(group, index) {
-  const keeper = group.files.find((f) => f.role === "keeper");
-  const title = keeper ? keeper.path.split("/").pop() : group.members[0].split("/").pop();
+  const chosen = isSelected(group);
+  const paths = group.files.map((f) => f.path);
+  const keeper = group.keeper || "";
+  const bytes = group.files.filter((f) => chosen.includes(f.path)).reduce((sum, f) => sum + f.size, 0);
   const detail = Object.entries(group.detail || {})
     .filter(([, v]) => v !== null && v !== undefined)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(", ");
-  const bytes = group.files.filter((f) => f.role === "victim").reduce((sum, f) => sum + f.size, 0);
-  return `<div class="card">
-    <h3>${index + 1}. ${escapeHtml(title)} <span class="badge">${group.size} файла(ов)</span></h3>
-    <p class="meta">${escapeHtml(detail)}${bytes ? ` · можно освободить ${fmtBytes(bytes)}` : ""}</p>
-    <div class="grid">${group.files.map((f) => tile(f)).join("")}</div>
+    .map(([k, v]) => `${k}=${v}`).join(", ");
+  const counts = `${chosen.length} из ${group.size}`;
+  return `<div class="card" data-kind="${escapeHtml(group.kind)}">
+    <h3>${index + 1}. ${escapeHtml(keeper.split("/").pop() || group.members[0].split("/").pop())}
+      <span class="badge">${group.size} файла(ов)</span></h3>
+    <p class="meta">${escapeHtml(detail)}</p>
+    <div class="grid">${group.files.map((f) => tile(group, f)).join("")}</div>
+    <div class="card-actions">
+      <span class="pickcount">перенести: ${counts}${bytes ? ` · ${fmtBytes(bytes)}` : ""}</span>
+      <button class="danger" data-role="remove" data-key="${escapeHtml(groupKey(group))}">В карантин</button>
+      <button class="ghost" data-role="skip" data-key="${escapeHtml(groupKey(group))}">Оставить оба</button>
+      <button class="ghost" data-role="reset" data-key="${escapeHtml(groupKey(group))}">Сброс</button>
+    </div>
   </div>`;
 }
 
@@ -141,27 +182,68 @@ function render() {
       main.innerHTML = `<p class="empty">Кластеров нет. Понизь порог cosine или проиндексируй больше.</p>`;
       return;
     }
-    main.innerHTML = state.clusters.map((cluster, i) => {
-      const bytes = 0;
-      return `<div class="card">
+    main.innerHTML = state.clusters.map((cluster, i) => `<div class="card">
         <h3>${i + 1}. кластер <span class="badge">${cluster.size} файла(ов)</span></h3>
         <p class="meta">${escapeHtml(cluster.members[0].split("/").slice(0, -1).join("/"))}</p>
-        <div class="grid">${cluster.members.map((m) => tile({ path: m, size: 0 }, false)).join("")}</div>
-      </div>`;
-    }).join("");
+        <div class="grid">${cluster.members.map((m) =>
+          `<div class="tile"><a href="${thumb(m, 512)}" target="_blank"><img src="${thumb(m)}" loading="lazy" alt=""></a>
+           <div class="name">${escapeHtml(m.split("/").pop())}</div></div>`).join("")}</div>
+      </div>`).join("");
     return;
   }
 
   const groups = state.groups.filter((g) => g.kind === state.tab);
   if (!groups.length) {
-    main.innerHTML = `<p class="empty">Пусто. Проверь, что индекс построен, или посмотри другие вкладки.</p>`;
+    main.innerHTML = `<p class="empty">Здесь пусто. Проверь индекс, другую вкладку или нажми «Снять все отметки».</p>`;
     return;
   }
-  const totalBytes = groups.reduce(
-    (sum, g) => sum + g.files.filter((f) => f.role === "victim").reduce((s, f) => s + f.size, 0), 0);
-  main.innerHTML = `<p class="meta">${groups.length} групп · кандидатов на ${fmtBytes(totalBytes)}</p>` +
+  const total = groups.reduce((sum, g) =>
+    sum + g.files.filter((f) => isSelected(g).includes(f.path)).reduce((s, f) => s + f.size, 0), 0);
+  main.innerHTML = `<p class="meta">${groups.length} групп · отмечено на ${fmtBytes(total)}.
+    Красная рамка — уедет в карантин. Нажми ✓ чтобы снять отметку,
+    ★ чтобы оставить этот кадр вместо отмеченного.</p>` +
     groups.map(groupCard).join("");
 }
+
+function findGroupByKey(key) {
+  return state.groups.find((g) => groupKey(g) === key);
+}
+
+async function decide(paths, action) {
+  if (!paths.length) { toast("ничего не отмечено"); return; }
+  try {
+    const result = await api("/api/decide", {
+      method: "POST",
+      body: JSON.stringify({ paths, action }),
+    });
+    if (result.blocked && result.blocked.length) {
+      toast(`burst-кадры не трогаю: ${result.blocked.length} пропущено`, true);
+    }
+    if (action === "remove") {
+      toast(`перенесено ${result.moved ?? 0}. Откат — кнопка «Откатить».`);
+    } else {
+      toast(`пропущено ${result.skipped ?? 0}`);
+    }
+    await loadState();
+    await loadFindings();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const node = event.target.closest("[data-role]");
+  if (!node) return;
+  const { role, key, path } = node.dataset;
+  const group = findGroupByKey(key);
+  if (!group) return;
+
+  if (role === "toggle") { toggle(group, path); return; }
+  if (role === "star") { setKeeper(group, path); return; }
+  if (role === "remove") { decide(isSelected(group), "remove"); return; }
+  if (role === "skip") { decide(group.members, "skip"); return; }
+  if (role === "reset") { state.selected.delete(key); render(); return; }
+});
 
 $("btn-index").onclick = async () => {
   await api("/api/index", { method: "POST", body: JSON.stringify({}) });
@@ -202,35 +284,12 @@ $("btn-report").onclick = async () => {
   }
 };
 
-$("btn-apply").onclick = async () => {
+$("btn-reset").onclick = async () => {
   try {
-    const plan = await api("/api/apply", {
-      method: "POST",
-      body: JSON.stringify({ phash: +$("phash").value, cosine: +$("cosine").value, kinds: ["exact"] }),
+    const result = await api("/api/decide", {
+      method: "POST", body: JSON.stringify({ action: "clear", paths: ["-"] }),
     });
-    if (!plan.count) { toast("нечего переносить"); return; }
-    $("plan-summary").innerHTML =
-      `Перенесу <b>${plan.count}</b> файла(ов) на <b>${fmtBytes(plan.bytes)}</b>.`;
-    $("plan-list").innerHTML = plan.sample
-      .map((m) => `<li>${escapeHtml(m.from)} → ${escapeHtml(m.to)}</li>`).join("");
-    $("plan-confirm").dataset.kinds = JSON.stringify(["exact"]);
-    $("plan").showModal();
-  } catch (err) {
-    toast(err.message, true);
-  }
-};
-
-$("plan-cancel").onclick = () => $("plan").close();
-
-$("plan-confirm").onclick = async () => {
-  const kinds = JSON.parse($("plan-confirm").dataset.kinds || '["exact"]');
-  try {
-    const result = await api("/api/apply/confirm", {
-      method: "POST",
-      body: JSON.stringify({ phash: +$("phash").value, cosine: +$("cosine").value, kinds }),
-    });
-    $("plan").close();
-    toast(`перенесено ${result.moved}. Откат — кнопка «Откатить».`);
+    toast(`снято отметок: ${result.cleared}`);
     await loadState();
     await loadFindings();
   } catch (err) {

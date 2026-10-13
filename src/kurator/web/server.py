@@ -126,6 +126,9 @@ def _groups_for(state: State, phash: int, cosine: float):
         strong_cosine=cosine,
         include_burst=True,
     )
+    skipped = state.store.skipped()
+    if skipped:
+        groups = [g for g in groups if not (set(g.members) & skipped)]
 
     _, paths, vectors = state.store.embeddings()
     clusters: list[list[str]] = []
@@ -260,6 +263,7 @@ class Handler(BaseHTTPRequestHandler):
                         "batch": BATCH_SIZE,
                     },
                     "quarantine": QUARANTINE_DIRNAME,
+                    "skipped": len(store.skipped()),
                     "job": self.state.job,
                 }
             )
@@ -404,6 +408,49 @@ class Handler(BaseHTTPRequestHandler):
             moves = plan_moves(self.state.root, victims)
             result = apply_moves(self.state.store, moves, kind=",".join(sorted(kinds)), dry_run=False)
             self._json(result)
+            return
+
+        if route == "/api/decide":
+            from ..dedupe import burst_members
+            from ..quarantine import apply_moves, plan_moves
+
+            paths = [p for p in (body.get("paths") or []) if p]
+            action = body.get("action")
+            if not paths:
+                self._json({"error": "нечего решать"}, 400)
+                return
+            root = self.state.root
+            photos = self.state.store.photos()
+            protected = burst_members(photos)
+
+            if action == "remove":
+                selected = [p for p in paths if p not in protected]
+                blocked = [p for p in paths if p in protected]
+                if not selected:
+                    self._json(
+                        {"error": "всё выбранное — burst-кадры, их не трогаем", "blocked": blocked},
+                        400,
+                    )
+                    return
+                moves = plan_moves(root, selected)
+                result = apply_moves(self.state.store, moves, kind="by-hand", dry_run=False)
+                self.state.store.drop_decisions(paths)
+                self._json({**result, "blocked": blocked})
+                return
+
+            if action == "skip":
+                self.state.store.record_decision(paths, "skip")
+                self.state.store.commit()
+                self._json({"skipped": len(paths)})
+                return
+
+            if action == "clear":
+                removed = self.state.store.clear_decisions(body.get("scope"))
+                self.state.store.commit()
+                self._json({"cleared": removed})
+                return
+
+            self._json({"error": f"неизвестное действие: {action}"}, 400)
             return
 
         if route == "/api/undo":

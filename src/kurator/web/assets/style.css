@@ -7,7 +7,8 @@ header { display:flex; align-items:baseline; gap:18px; padding:16px 24px; border
 .logo { font-size:20px; font-weight:600; letter-spacing:-.3px; }
 .root { color:var(--muted); font-size:13px; }
 .stats { margin-left:auto; color:var(--muted); font-size:13px; }
-.bar { display:flex; align-items:center; gap:10px; padding:12px 24px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.bar { display:flex; align-items:center; gap:8px; padding:12px 24px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.bar button { padding:7px 11px; }
 .bar label { color:var(--muted); font-size:13px; display:flex; align-items:center; gap:6px; }
 .bar input { width:78px; }
 .spacer { flex:1; }
@@ -32,14 +33,25 @@ main { padding:18px 24px 60px; }
 .card h3 { margin:0 0 4px; font-size:15px; }
 .meta { color:var(--muted); font-size:13px; margin:0 0 12px; }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
-.tile { background:#101013; border:2px solid var(--line); border-radius:8px; padding:6px; }
-.tile.keeper { border-color:var(--keep); }
-.tile img { width:100%; height:120px; object-fit:cover; border-radius:4px; display:block; background:#000; }
+.tile { background:#101013; border:2px solid var(--line); border-radius:8px; padding:6px;
+  position:relative; }
+.tile.picked { border-color:var(--drop); }
+.tile img { width:100%; height:120px; object-fit:cover; border-radius:4px; display:block;
+  background:#000; margin-top:18px; }
 .tile .name { font-size:11px; margin-top:6px; word-break:break-all; color:var(--muted); line-height:1.3; }
-.tile.keeper .name { color:var(--fg); }
-.tile .role { font-size:11px; margin-top:3px; }
-.tile.keeper .role { color:var(--keep); }
-.tile .role.victim { color:var(--drop); }
+.tile .meta { font-size:11px; color:#71717a; }
+.tile .pick, .tile .keepmark { position:absolute; top:4px; z-index:2; border:1px solid var(--line);
+  background:rgba(16,16,19,.85); color:var(--muted); border-radius:6px; cursor:pointer;
+  font:inherit; padding:0; }
+.tile .pick { left:4px; width:22px; height:22px; font-size:13px; color:transparent; }
+.tile .pick:hover { border-color:var(--accent); }
+.tile.picked .pick { color:var(--fg); background:var(--drop); border-color:var(--drop); }
+.tile .keepmark { right:4px; width:22px; height:22px; font-size:12px; }
+.tile .keepmark { color:#4b4b55; }
+.tile .keepmark:hover { border-color:var(--keep); color:var(--keep); }
+.tile .keepmark.on { color:var(--keep); border-color:var(--keep); }
+.card-actions { display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap; }
+.card-actions .pickcount { color:var(--muted); font-size:13px; margin-right:auto; }
 .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
   background:#27272a; color:var(--muted); margin-left:8px; }
 dialog { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:14px;

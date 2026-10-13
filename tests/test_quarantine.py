@@ -56,6 +56,52 @@ def test_apply_then_undo_round_trip(tmp_path):
     store.close()
 
 
+def test_undo_returns_file_to_index(tmp_path):
+    """После отката файл обязан снова попасть в индекс, иначе пропадёт из отчёта."""
+    from PIL import Image
+
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, plan_moves, undo_last_run
+
+    photo = tmp_path / "shot.jpg"
+    Image.new("RGB", (64, 48), (120, 90, 60)).save(photo, "JPEG")
+
+    store = Store.open(tmp_path)
+    info = photo.stat()
+    store.upsert(
+        Photo(rel_path="shot.jpg", size=info.st_size, mtime=info.st_mtime, md5="m")
+    )
+    store.commit()
+    assert "shot.jpg" in {p.rel_path for p in store.photos()}
+
+    apply_moves(store, plan_moves(tmp_path, ["shot.jpg"]), kind="exact", dry_run=False)
+    assert "shot.jpg" not in {p.rel_path for p in store.photos()}
+
+    undo_last_run(store)
+    assert (tmp_path / "shot.jpg").is_file()
+    assert "shot.jpg" in {p.rel_path for p in store.photos()}
+    store.close()
+
+
+def test_skip_decisions_persist_and_clear(tmp_path):
+    make_store(tmp_path)
+    store = Store.open(tmp_path)
+
+    store.record_decision(["b.txt", "c.txt"], "skip")
+    store.commit()
+    assert store.skipped() == {"b.txt", "c.txt"}
+
+    store.clear_decisions("skip")
+    store.commit()
+    assert store.skipped() == set()
+
+    store.record_decision(["a.txt"], "remove")
+    store.commit()
+    assert store.decided() == {"a.txt"}
+    assert store.skipped() == set()
+    store.close()
+
+
 def test_undo_without_runs_is_harmless(tmp_path):
     make_store(tmp_path)
     store = Store.open(tmp_path)
