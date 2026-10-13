@@ -117,3 +117,29 @@ def test_apply_and_undo_round_trip(tmp_path):
     undo_last_run(store)
     assert all((root / rel).exists() for rel in victims)
     store.close()
+
+@pytest.mark.skipif(not _model_present(), reason="нет весов: ./scripts/pull-model.sh")
+def test_partial_reindex_keeps_other_rows(tmp_path):
+    """Доиндексация одного файла не имеет права вычищать остальные записи."""
+    from kurator.db import Store as S
+    from kurator.indexer import index_root, index_paths
+
+    root = tmp_path / "archive"
+    subprocess.run(
+        [sys.executable, str(SCRIPT), str(root), "6"],
+        check=True, capture_output=True,
+    )
+
+    store = S.open(root)
+    index_root(root, store, encoder=None)
+    before = {p.rel_path for p in store.photos()}
+    assert len(before) > 3
+
+    target = sorted(before)[0]
+    index_paths(root, store, [target])
+    after = {p.rel_path for p in store.photos()}
+
+    assert after == before, (
+        f"потеряно {len(before - after)} записей: {sorted(before - after)[:3]}"
+    )
+    store.close()

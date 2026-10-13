@@ -16,15 +16,15 @@
 </header>
 
 <section class="bar">
-  <button id="btn-index" class="primary">Проиндексировать</button>
-  <button id="btn-reindex" class="ghost">Пересчитать всё</button>
+  <button id="btn-index" class="primary">Обновить индекс</button>
+  <span class="indexnote" id="indexnote">—</span>
+  <button id="btn-reindex" class="linklike" title="Заново посчитать все хеши и эмбеддинги">пересчитать всё заново</button>
   <label>pHash
     <input type="number" id="phash" min="0" max="20" step="1">
   </label>
   <label>cosine
     <input type="number" id="cosine" min="0.5" max="1" step="0.01">
   </label>
-  <button id="btn-refresh" class="ghost">Пересчитать находки</button>
   <span class="spacer"></span>
   <button id="btn-report" class="ghost">Отчёт</button>
   <button id="btn-reset" class="ghost">Снять все отметки</button>
@@ -35,6 +35,17 @@
   <div class="fill" id="progress-fill"></div>
   <span id="progress-text"></span>
 </section>
+
+<dialog id="rehash">
+  <h2>Пересчитать всё заново</h2>
+  <p class="muted" id="rehash-cost"></p>
+  <p class="muted">Придётся заново посчитать хеши и эмбеддинги для всех файлов.
+     Индекс останется на месте, но процесс небыстрый.</p>
+  <div class="dialog-actions">
+    <button id="rehash-cancel" class="ghost">Отмена</button>
+    <button id="rehash-confirm" class="danger">Начать заново</button>
+  </div>
+</dialog>
 
 <nav class="tabs">
   <button data-tab="exact" class="active">Точные дубли</button>

@@ -67,9 +67,10 @@ def index_root(
             continue
         pending.append((rel, path))
 
-    gone = [rel for rel in known if rel not in present]
-    store.forget(gone)
-    stats["removed"] = len(gone)
+    if only_paths is None:
+        gone = [rel for rel in known if rel not in present]
+        store.forget(gone)
+        stats["removed"] = len(gone)
 
     def report(message: str) -> None:
         if progress:

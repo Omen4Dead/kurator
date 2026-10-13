@@ -264,6 +264,7 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     "quarantine": QUARANTINE_DIRNAME,
                     "skipped": len(store.skipped()),
+                    "last_index_at": store.get_meta("last_index_at"),
                     "job": self.state.job,
                 }
             )

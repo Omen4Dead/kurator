@@ -68,14 +68,6 @@ function toggle(group, path) {
   render();
 }
 
-function setKeeper(group, path) {
-  state.selected.set(
-    groupKey(group),
-    group.files.filter((f) => f.path !== path).map((f) => f.path),
-  );
-  render();
-}
-
 async function loadState() {
   const data = await api("/api/state");
   state.root = data.root;
@@ -86,6 +78,10 @@ async function loadState() {
     (data.skipped ? ` · пропущено ${data.skipped}` : "");
   if (!$("phash").dataset.touched) $("phash").value = data.defaults.phash;
   if (!$("cosine").dataset.touched) $("cosine").value = data.defaults.cosine;
+  const when = data.last_index_at
+    ? new Date(data.last_index_at * 1000).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })
+    : "ни разу";
+  $("indexnote").textContent = `последний проход: ${when}`;
   if (data.job && data.job.status === "running") pollJob();
 }
 
@@ -112,7 +108,11 @@ async function pollJob() {
     }
     if (job.status === "error") { toast(`ошибка: ${job.error}`, true); idle(); return; }
     const s = job.stats || {};
-    toast(`готово: ${s.seen} просмотрено, ${s.indexed} новых, эмбеддингов ${s.embedded}`);
+    if (!s.indexed) {
+      toast("новых и изменённых файлов нет — индекс уже актуален");
+    } else {
+      toast(`готово: просмотрено ${s.seen}, новых ${s.indexed}, эмбеддингов ${s.embedded}`);
+    }
     idle();
     await loadState();
     await loadFindings();
@@ -138,14 +138,12 @@ function tile(group, file) {
   const key = groupKey(group);
   const path = escapeHtml(file.path);
   const selected = isSelected(group, file.path).includes(file.path);
-  const isKeeper = !selected && file.role === "keeper";
   const size = file.size === null || file.size === undefined ? "" : ` · ${fmtBytes(file.size)}`;
   const when = file.taken_at ? file.taken_at.slice(0, 10) : "";
   return `<div class="tile ${selected ? "picked" : ""}">
     <button class="pick" data-role="toggle" data-key="${escapeHtml(key)}" data-path="${path}"
-            title="${selected ? "Снять отметку" : "Отметить для переноса"}">${selected ? "✓" : ""}</button>
-    <button class="keepmark ${isKeeper ? "on" : ""}" data-role="star" data-key="${escapeHtml(key)}"
-            data-path="${path}" title="Оставить этот кадр, остальные перенести">★</button>
+            title="${selected ? "Снять отметку" : "Отметить для переноса"}"
+            aria-pressed="${selected}">${selected ? "✓" : ""}</button>
     <a href="${thumb(file.path, 512)}" target="_blank"><img src="${thumb(file.path)}" loading="lazy" alt=""></a>
     <div class="name">${escapeHtml(file.path.split("/").pop())}</div>
     <div class="meta">${escapeHtml(when)}${size}</div>
@@ -200,8 +198,8 @@ function render() {
   const total = groups.reduce((sum, g) =>
     sum + g.files.filter((f) => isSelected(g).includes(f.path)).reduce((s, f) => s + f.size, 0), 0);
   main.innerHTML = `<p class="meta">${groups.length} групп · отмечено на ${fmtBytes(total)}.
-    Красная рамка — уедет в карантин. Нажми ✓ чтобы снять отметку,
-    ★ чтобы оставить этот кадр вместо отмеченного.</p>` +
+    Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить
+    другой кадр вместо отмеченного, снимите ✓ здесь и поставьте там.</p>` +
     groups.map(groupCard).join("");
 }
 
@@ -239,7 +237,6 @@ document.addEventListener("click", (event) => {
   if (!group) return;
 
   if (role === "toggle") { toggle(group, path); return; }
-  if (role === "star") { setKeeper(group, path); return; }
   if (role === "remove") { decide(isSelected(group), "remove"); return; }
   if (role === "skip") { decide(group.members, "skip"); return; }
   if (role === "reset") { state.selected.delete(key); render(); return; }
@@ -251,11 +248,23 @@ $("btn-index").onclick = async () => {
 };
 
 $("btn-reindex").onclick = async () => {
+  const data = await api("/api/state");
+  const files = data.files || 0;
+  const seconds = Math.max(1, Math.round(files / 12));
+  const text = seconds > 90
+    ? `${files} файлов, примерно ${Math.round(seconds / 60)} мин на этой машине.`
+    : `${files} файлов, примерно ${seconds} сек.`;
+  $("rehash-cost").textContent = text;
+  $("rehash").showModal();
+};
+
+$("rehash-cancel").onclick = () => $("rehash").close();
+
+$("rehash-confirm").onclick = async () => {
+  $("rehash").close();
   await api("/api/index", { method: "POST", body: JSON.stringify({ rehash: true }) });
   pollJob();
 };
-
-$("btn-refresh").onclick = loadFindings;
 
 $("phash").oninput = (e) => { e.target.dataset.touched = "1"; };
 $("cosine").oninput = (e) => { e.target.dataset.touched = "1"; };
@@ -268,6 +277,7 @@ document.querySelectorAll(".tabs button").forEach((button) => {
     button.classList.add("active");
     state.tab = button.dataset.tab;
     render();
+    loadFindings().catch(() => {});
   };
 });
 
