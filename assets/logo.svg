@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="kurator">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFF6EA"/>
+      <stop offset="1" stop-color="#FFE8CC"/>
+    </linearGradient>
+    <linearGradient id="suit" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C3E60"/>
+      <stop offset="1" stop-color="#1B2740"/>
+    </linearGradient>
+    <linearGradient id="comb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FF7A45"/>
+      <stop offset="1" stop-color="#E03E1F"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <!-- шея и грудь -->
+  <path d="M206 236 h100 v74 h-100 z" fill="#FFF8EE"/>
+  <path d="M186 300 h140 c14 0 26 12 26 26 v186 h-192 v-186 c0-14 12-26 26-26 z" fill="#FFF8EE"/>
+
+  <!-- пиджак -->
+  <path d="M150 316 c-46 26-74 62-84 108 l-18 88 h416 l-18-88 c-10-46-38-82-84-108 l-52-24 c-8 40-24 60-54 60 s-46-20-54-60 z"
+        fill="url(#suit)"/>
+  <!-- воротник-рубашка -->
+  <path d="M196 292 l60 56 60-56 26 18 -44 202 h-84 l-44-202 z" fill="#FFFFFF"/>
+  <!-- воротник -->
+  <path d="M196 292 l60 56 -38 -10 -30 -30 z" fill="#F2F5FA"/>
+  <path d="M316 292 l-60 56 38 -10 30 -30 z" fill="#F2F5FA"/>
+  <!-- галстук -->
+  <path d="M256 348 l24 26 -14 20 18 16 -28 106 -28-106 18-16 -14-20 z" fill="#FF7A45"/>
+  <path d="M244 380 l12 -12 12 12 -12 12 z" fill="#FF9A6B" opacity="0.55"/>
+
+  <!-- голова -->
+  <circle cx="256" cy="196" r="86" fill="#FFF8EE"/>
+  <!-- гребень -->
+  <path d="M196 128 c-16-30 6-58 30-50 2-30 34-40 48-20 12-28 46-20 46 12 18-10 36 6 30 28 -4 16-18 24-34 22 z"
+        fill="url(#comb)"/>
+  <!-- клюв -->
+  <path d="M336 182 c26-4 52 4 66 16 -16 20 -44 26 -70 20 z" fill="#F5A623"/>
+  <path d="M336 218 c22 2 44 8 62 18 -18 16 -46 20 -68 14 z" fill="#E89413"/>
+  <!-- серёжки -->
+  <path d="M300 252 c18 0 30 14 26 30 -3 12-14 20-26 20 -14 0-24-10-24-24 0-14 10-26 24-26 z" fill="#E03E1F"/>
+  <!-- глаз -->
+  <circle cx="296" cy="180" r="13" fill="#241C14"/>
+  <circle cx="301" cy="175" r="4.5" fill="#FFFFFF"/>
+  <!-- румянец -->
+  <ellipse cx="272" cy="218" rx="16" ry="11" fill="#FFC7A8" opacity="0.6"/>
+</svg>
