@@ -25,7 +25,14 @@ IMAGE_EXTENSIONS = {
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".heic-mov"}
 
 STATE_DIRNAME = ".kurator"
-QUARANTINE_DIRNAME = "_kurator_quarantine"
+# Карантин живёт внутри служебной папки: одна скрытая директория вместо
+# двух, и индекс не нужно отдельно исключать из обхода — индексатор
+# пропускает всё, что начинается с точки.
+QUARANTINE_DIRNAME = f"{STATE_DIRNAME}/quarantine"
+# Старое расположение: карантин был отдельной папкой в корне. Нужно,
+# чтобы переехать на него можно было не спрашивая, иначе файлы, уже
+# перенесённые в старый карантин, потеряли бы связь с манифестами.
+LEGACY_QUARANTINE_DIRNAME = "_kurator_quarantine"
 DB_FILENAME = "index.db"
 
 MODEL_FILENAME = "vision_model_int8.onnx"
@@ -52,6 +59,7 @@ CLUSTER_COSINE = 0.86
 SKIP_DIRNAMES = {
     STATE_DIRNAME,
     QUARANTINE_DIRNAME,
+    LEGACY_QUARANTINE_DIRNAME,
     "node_modules",
     ".git",
     ".Trash",

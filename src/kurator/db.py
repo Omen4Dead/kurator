@@ -373,6 +373,14 @@ class Store:
             self.conn.commit()
         return int(cur.lastrowid)
 
+    def repoint_run(self, run_id: int, manifest: Path) -> None:
+        """Переписать адрес манифеста, если папка с ним переехала."""
+        with self.lock:
+            self.conn.execute(
+                "UPDATE runs SET manifest=? WHERE id=?", (str(manifest), run_id)
+            )
+            self.conn.commit()
+
     def last_run(self) -> sqlite3.Row | None:
         rows = self.query("SELECT * FROM runs ORDER BY id DESC LIMIT 1")
         return rows[0] if rows else None

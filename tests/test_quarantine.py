@@ -1,4 +1,5 @@
 import datetime as dt
+import shutil
 from pathlib import Path
 
 from kurator.db import Store
@@ -337,7 +338,7 @@ def test_list_trash_shows_quarantined_files_with_origin(tmp_path):
     items = list_trash(store)
 
     assert {i["from_path"] for i in items} == {"a.jpg", "b.jpg"}
-    assert all(i["to_path"].startswith("_kurator_quarantine/") for i in items)
+    assert all(i["to_path"].startswith(".kurator/quarantine/") for i in items)
     assert all(i["size"] > 0 and i["orphan"] is False for i in items)
     store.close()
 
@@ -462,3 +463,74 @@ def test_undo_all_runs_empties_quarantine_at_once(tmp_path):
         assert (tmp_path / name).is_file(), f"{name} не вернулся на место"
     assert quarantine_root(tmp_path).exists() is False
     store.close()
+
+
+def test_migration_moves_quarantine_and_keeps_undo_working(tmp_path):
+    """Переезд карантина в .kurator/quarantine не должен ломать откат.
+
+    Регрессия: пути в манифесте записаны от корня, поэтому простая
+    смена папки оставила бы файлы на месте, а манифест искал бы их
+    по старому адресу и рапортовал «файла уже нет».
+    """
+    from kurator.db import Photo
+    from kurator.quarantine import (apply_moves, list_trash, migrate_legacy_quarantine,
+                                   plan_moves, quarantine_root, undo_all_runs)
+
+    store = Store.open(tmp_path)
+    for name in ("a.jpg", "b.jpg"):
+        p = tmp_path / name
+        p.write_bytes(name.encode() * 12)
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+
+    # раскладываем карантин вручную по старой схеме: файлы именно
+    # переезжают из корня, как это делает apply_moves
+    legacy = tmp_path / "_kurator_quarantine"
+    legacy.mkdir()
+    shutil.move(str(tmp_path / "a.jpg"), str(legacy / "a.jpg"))
+    shutil.move(str(tmp_path / "b.jpg"), str(legacy / "b.jpg"))
+    manifest = legacy / "manifest_by-hand_1_2.json"
+    manifest.write_text(
+        '{"kind":"by-hand","root":"%s","created_at":"2026-01-01T00:00:00","count":2,'
+        '"bytes":24,"moves":[{"from":"a.jpg","to":"_kurator_quarantine/a.jpg"},'
+        '{"from":"b.jpg","to":"_kurator_quarantine/b.jpg"}]}' % tmp_path,
+        encoding="utf-8",
+    )
+    store.start_run("by-hand", manifest)
+    store.commit()
+
+    assert migrate_legacy_quarantine(tmp_path)["moved"] == 2
+    assert legacy.exists() is False, "старая папка должна исчезнуть"
+    assert quarantine_root(tmp_path).is_dir()
+
+    rewritten = (quarantine_root(tmp_path) / manifest.name).read_text(encoding="utf-8")
+    assert "_kurator_quarantine/a.jpg" not in rewritten
+    assert ".kurator/quarantine/a.jpg" in rewritten
+
+    items = list_trash(store)
+    assert len(items) == 2, "после переезда оба файла должны быть видны в корзине"
+
+    result = undo_all_runs(store)
+
+    assert result["moved"] == 2
+    for name in ("a.jpg", "b.jpg"):
+        assert (tmp_path / name).read_bytes() == name.encode() * 12
+    assert store.query("SELECT * FROM runs") == []
+    store.close()
+
+
+def test_migration_is_idempotent(tmp_path):
+    """Повторный вызов миграции не должен ничего портить."""
+    from kurator.quarantine import migrate_legacy_quarantine, quarantine_root
+
+    legacy = tmp_path / "_kurator_quarantine"
+    legacy.mkdir()
+    (legacy / "a.jpg").write_bytes(b"a")
+
+    first = migrate_legacy_quarantine(tmp_path)
+    second = migrate_legacy_quarantine(tmp_path)
+
+    assert first["moved"] == 1
+    assert second["moved"] == 0
+    assert (quarantine_root(tmp_path) / "a.jpg").is_file()

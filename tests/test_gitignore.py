@@ -20,9 +20,10 @@ MUST_IGNORE = [
     "out/report.html",
     "out/sheets/exact_001.jpg",
     "report/report.md",
+    ".kurator/quarantine/IMG_1.jpg",
+    "Photos/.kurator/quarantine/IMG_1.jpg",
+    "Photos/.kurator/quarantine/manifest_by-hand_1.json",
     "_kurator_quarantine/IMG_1.jpg",
-    "Photos/_kurator_quarantine/IMG_1.jpg",
-    "Photos/_kurator_quarantine/manifest_by-hand_1.json",
 ]
 
 
@@ -49,6 +50,7 @@ def test_index_db_is_not_tracked():
         if f.endswith((".db", ".onnx"))
         or "/.kurator/" in f
         or "_kurator_quarantine/" in f
+        or ".kurator/" in f
         or f.startswith(("out/", "report/"))
     ]
     assert not offenders, f"в репозитории уже лежит: {offenders}"

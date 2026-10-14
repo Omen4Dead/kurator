@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import QUARANTINE_DIRNAME
+from .config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME
 from .db import Store
 
 
@@ -31,7 +31,76 @@ def quarantine_root(root: Path) -> Path:
     return root / QUARANTINE_DIRNAME
 
 
+def migrate_legacy_quarantine(root: Path) -> dict:
+    """Перенести карантин из старой папки в `.kurator/quarantine`.
+
+    Раньше карантин был отдельной директорией в корне. В манифестах
+    путь к перемещённому файлу записан относительно корня, поэтому
+    простая смена папки ломала откат: файлы лежали бы на месте,
+    а манифест искал бы их по старому адресу и рапортовал «файла уже
+    нет». Поэтому переносим файлы и правим `to` в манифестах.
+
+    Функция ничего не делает, если старой папки нет, и безопасна при
+    повторном вызове.
+    """
+    legacy = root / LEGACY_QUARANTINE_DIRNAME
+    result = {"moved": 0, "manifests": 0}
+    if not legacy.is_dir():
+        return result
+
+    base = quarantine_root(root)
+    base.mkdir(parents=True, exist_ok=True)
+
+    for path in sorted(legacy.rglob("*"), key=lambda p: len(p.parts)):
+        if path.is_dir():
+            continue
+        rel = path.relative_to(legacy)
+        target = base / rel
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(path), str(target))
+        except OSError:
+            continue
+        if path.suffix == ".json":
+            result["manifests"] += 1
+        else:
+            result["moved"] += 1
+
+    # Адреса в манифестах записаны от корня, поэтому после переезда
+    # префикс пути в них устарел.
+    prefix_old = f"{LEGACY_QUARANTINE_DIRNAME}/"
+    prefix_new = f"{QUARANTINE_DIRNAME}/"
+    for manifest in base.glob("*.json"):
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        changed = False
+        for move in payload.get("moves", []):
+            rel_to = move.get("to", "")
+            if rel_to.startswith(prefix_old):
+                move["to"] = prefix_new + rel_to[len(prefix_old):]
+                changed = True
+        if changed:
+            try:
+                manifest.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except OSError:
+                pass
+
+    _prune_empty_dirs(legacy)
+    try:
+        legacy.rmdir()
+    except OSError:
+        pass
+    return result
+
+
 def plan_moves(root: Path, rel_paths: list[str]) -> list[Move]:
+    migrate_legacy_quarantine(root)
     base = quarantine_root(root)
     moves: list[Move] = []
     seen: set[str] = set()
@@ -135,6 +204,7 @@ def undo_run(store: Store, run_id: int) -> dict:
 
 
 def list_runs(store: Store, limit: int = 20) -> list[dict]:
+    migrate_legacy_quarantine(store.root)
     out: list[dict] = []
     for row in store.query("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)):
         manifest = Path(row["manifest"])
@@ -159,7 +229,26 @@ def list_runs(store: Store, limit: int = 20) -> list[dict]:
     return out
 
 
+def _resolve_manifest(store: Store, row: sqlite3.Row) -> Path:
+    """Найти манифест, даже если в базе остался адрес старой папки.
+
+    Карантин переезжал внутрь `.kurator/`, а адрес манифеста в базе
+    записан абсолютным путём. Если бы строка осталась прежней, откат
+    рапортовал бы «манифест потерян», хотя файл лежит рядом под новым
+    именем. Найти его и починить запись дешевле, чем потерять перенос.
+    """
+    manifest = Path(row["manifest"])
+    if manifest.is_file():
+        return manifest
+    fallback = quarantine_root(store.root) / manifest.name
+    if fallback.is_file():
+        store.repoint_run(int(row["id"]), fallback)
+        return fallback
+    return manifest
+
+
 def undo_last_run(store: Store) -> dict:
+    migrate_legacy_quarantine(store.root)
     row = store.last_run()
     if row is None:
         return {"moved": 0, "message": "нечего откатывать — карантин пуст"}
@@ -173,6 +262,7 @@ def undo_all_runs(store: Store) -> dict:
     откатывать по одному переносу за клик: иначе при десяти файлах
     в карантине нужно десять нажатий, и кажется, что кнопка не работает.
     """
+    migrate_legacy_quarantine(store.root)
     rows = store.query("SELECT * FROM runs ORDER BY id ASC")
     if not rows:
         return {"moved": 0, "message": "нечего откатывать — карантин пуст"}
@@ -186,7 +276,7 @@ def undo_all_runs(store: Store) -> dict:
 
 
 def _restore(store: Store, row: sqlite3.Row) -> dict:
-    manifest = Path(row["manifest"])
+    manifest = _resolve_manifest(store, row)
     if not manifest.is_file():
         return {"moved": 0, "message": f"манифест потерян: {manifest}"}
     payload = json.loads(manifest.read_text(encoding="utf-8"))
@@ -225,6 +315,7 @@ def list_trash(store: Store) -> list[dict]:
     равно видно в папке карантина, молча пропускать их нельзя.
     """
     root = store.root
+    migrate_legacy_quarantine(root)
     base = quarantine_root(root)
     items: list[dict] = []
     claimed: set[str] = set()
