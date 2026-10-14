@@ -426,3 +426,39 @@ def test_list_trash_reports_files_without_manifest(tmp_path):
     assert items[0]["orphan"] is True
     assert items[0]["from_path"] is None
     store.close()
+
+
+def test_undo_all_runs_empties_quarantine_at_once(tmp_path):
+    """Кнопка «Вернуть из карантина» должна опустошать папку за один клик.
+
+    Регрессия: откатывался только последний перенос, поэтому при
+    нескольких переносах в карантине кнопка возвращала по одному файлу
+    за нажатие и выглядела как нерабочая.
+    """
+    from kurator.db import Photo
+    from kurator.quarantine import (apply_moves, plan_moves, undo_all_runs,
+                                   list_trash, quarantine_root)
+
+    store = Store.open(tmp_path)
+    names = [f"{i}.jpg" for i in range(5)]
+    for name in names:
+        p = tmp_path / name
+        p.write_bytes(name.encode() * 8)
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+
+    for name in names:
+        apply_moves(store, plan_moves(tmp_path, [name]), kind="by-hand", dry_run=False)
+    assert len(list_trash(store)) == 5
+
+    result = undo_all_runs(store)
+
+    assert result["moved"] == 5, "все пять файлов обязаны вернуться за один вызов"
+    assert result["runs"] == 5
+    assert list_trash(store) == []
+    assert store.query("SELECT * FROM runs") == []
+    for name in names:
+        assert (tmp_path / name).is_file(), f"{name} не вернулся на место"
+    assert quarantine_root(tmp_path).exists() is False
+    store.close()

@@ -166,6 +166,25 @@ def undo_last_run(store: Store) -> dict:
     return _restore(store, row)
 
 
+def undo_all_runs(store: Store) -> dict:
+    """Вернуть из карантина вообще всё.
+
+    Кнопка «Вернуть из карантина» должна опустошать папку целиком, а не
+    откатывать по одному переносу за клик: иначе при десяти файлах
+    в карантине нужно десять нажатий, и кажется, что кнопка не работает.
+    """
+    rows = store.query("SELECT * FROM runs ORDER BY id ASC")
+    if not rows:
+        return {"moved": 0, "message": "нечего откатывать — карантин пуст"}
+    moved = 0
+    missing: list[str] = []
+    for row in rows:
+        result = _restore(store, row)
+        moved += result.get("moved", 0)
+        missing.extend(result.get("missing", []))
+    return {"moved": moved, "missing": missing, "runs": len(rows)}
+
+
 def _restore(store: Store, row: sqlite3.Row) -> dict:
     manifest = Path(row["manifest"])
     if not manifest.is_file():
@@ -232,6 +251,7 @@ def list_trash(store: Store) -> list[dict]:
                 "created_at": payload.get("created_at", ""),
                 "run_id": int(row["id"]),
                 "orphan": False,
+                "junk": False,
             })
 
     if base.is_dir():
@@ -250,6 +270,7 @@ def list_trash(store: Store) -> list[dict]:
                 "created_at": dt.datetime.fromtimestamp(info.st_mtime).isoformat(timespec="seconds"),
                 "run_id": None,
                 "orphan": True,
+                "junk": path.name.startswith("._") or path.name == ".DS_Store",
             })
 
     items.sort(key=lambda i: (i["created_at"], i["to_path"]), reverse=True)

@@ -16,12 +16,15 @@
       <span class="rootchev" aria-hidden="true">сменить</span>
     </button>
   </div>
+  <button id="btn-report" class="linklike" title="Сохранить отчёт о найденных дубликатах">Отчёт</button>
   <div class="stats" id="stats">загружаю…</div>
 </header>
 
 <section class="bar">
-  <button id="btn-index" class="primary">Обновить индекс</button>
-  <span class="indexnote" id="indexnote">—</span>
+  <div class="indexblock">
+    <button id="btn-index" class="primary">Обновить индекс</button>
+    <span class="indexnote" id="indexnote">—</span>
+  </div>
   <button id="btn-reindex" class="linklike" title="Заново посчитать все хеши и эмбеддинги">пересчитать всё заново</button>
   <div class="params">
     <div class="param">
@@ -57,8 +60,6 @@
       но в разные стороны</span>
   </div>
   <span class="spacer"></span>
-  <button id="btn-report" class="ghost">Отчёт</button>
-  <button id="btn-reset" class="ghost">Снять галочки</button>
   <button id="btn-unskip" class="ghost">Вернуть пропущенные</button>
   <button id="btn-undo" class="ghost">Вернуть из карантина</button>
   <button id="btn-trash" class="ghost">Корзина</button>

@@ -690,9 +690,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/undo":
-            from ..quarantine import undo_last_run
+            from ..quarantine import undo_all_runs
 
-            self._json(undo_last_run(self.state.store))
+            self._json(undo_all_runs(self.state.store))
             return
 
         self._json({"error": "not found"}, 404)

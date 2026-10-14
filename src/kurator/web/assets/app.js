@@ -202,9 +202,11 @@ async function refreshSituation() {
 async function loadStrips() {
   try {
     const { runs } = await api("/api/runs");
+    const files = runs.reduce((sum, r) => sum + r.paths.length, 0);
+    state.trashFiles = files;
     $("btn-undo").hidden = !runs.length;
-    $("btn-undo").textContent = runs.length
-      ? `Вернуть из карантина (${runs.length})` : "Вернуть из карантина";
+    $("btn-undo").textContent = files
+      ? `Вернуть из карантина (${files})` : "Вернуть из карантина";
     state.strips = runs
       .filter((r) => r.kind === "by-hand" && r.paths.length)
       .map((r) => ({
@@ -265,7 +267,7 @@ function render() {
 
   const groups = state.groups.filter((g) => g.kind === state.tab);
   if (!groups.length) {
-    main.innerHTML = top + `<p class="empty">Здесь пусто. Проверь индекс, другую вкладку или нажми «Снять все отметки».</p>`;
+    main.innerHTML = top + `<p class="empty">Здесь пусто. Проверь индекс или открой другую вкладку.</p>`;
     return;
   }
   const total = groups.reduce((sum, g) =>
@@ -315,27 +317,16 @@ async function decide(paths, action, sig) {
       return;
     }
     if (action === "remove") {
-      if (result.run_id) {
-        const group = findGroupByKey(groupKeyByFirstPath(paths));
-        const bytes = group
-          ? group.files.filter((f) => paths.includes(f.path))
-                       .reduce((sum, f) => sum + (f.size || 0), 0)
-          : (result.bytes || 0);
-        state.strips.unshift({
-          run_id: result.run_id,
-          paths,
-          title: (groupTitle(paths) || paths[0] || "").split("/").pop(),
-          bytes,
-        });
-      }
-      render();
       toast(`перенесено ${result.moved ?? 0}. Полоса с кнопкой «Вернуть» — сверху.`);
     } else {
       toast(`пропущено ${result.skipped ?? 0}`);
     }
     await loadState();
+    await loadStrips();
+    await loadTrashCount();
     await refreshSituation();
     await loadFindings();
+    render();
   } catch (err) {
     toast(err.message, true);
   }
@@ -531,19 +522,6 @@ $("btn-factory").onclick = async () => {
   }
 };
 
-$("btn-reset").onclick = () => {
-  const groups = state.groups.filter((g) => g.kind === state.tab);
-  let touched = 0;
-  for (const group of groups) {
-    const key = groupKey(group);
-    if (!state.selected.has(key)) continue;
-    touched += state.selected.get(key).length;
-    state.selected.delete(key);
-  }
-  render();
-  toast(touched ? `снято галочек: ${touched}` : "галочек и не было стояло");
-};
-
 $("btn-unskip").onclick = async () => {
   const count = Object.keys(state.skipped || {}).length;
   if (!count) { toast("скрытых групп нет"); return; }
@@ -568,12 +546,13 @@ $("btn-undo").onclick = async () => {
     toast(err.message, true);
     return;
   }
-  if (!confirm("Вернуть из карантина последний перенос?")) return;
+  if (!confirm("Вернуть из карантина всё, что там лежит?")) return;
   try {
     const result = await api("/api/undo", { method: "POST", body: "{}" });
     toast(result.message ? result.message : `возвращено ${result.moved}`);
     await loadState();
     await loadStrips();
+    await loadTrashCount();
     await loadFindings();
   } catch (err) {
     toast(err.message, true);
@@ -599,7 +578,9 @@ function renderTrash() {
 
   $("trash-list").innerHTML = box.items.map((item) => {
     const checked = box.chosen.has(item.key) ? " checked" : "";
-    const orphan = item.orphan
+    const note = item.junk
+      ? `<div class="orphan">служебный файл macOS, не фотография</div>`
+      : item.orphan
       ? `<div class="orphan">без манифеста — откатить нечем</div>` : "";
     return `<li class="trashitem">
       <input type="checkbox" data-trash="${escapeHtml(item.key)}"${checked}>
@@ -607,7 +588,7 @@ function renderTrash() {
       <div class="trashbody">
         <div class="trashname">${escapeHtml(item.to_path.split("/").pop())}</div>
         <div class="trashpath" title="${escapeHtml(item.to_path)}">${escapeHtml(trashKeyLabel(item))}</div>
-        ${orphan}
+        ${note}
       </div>
       <span class="trashsize">${fmtBytes(item.size)}</span>
     </li>`;

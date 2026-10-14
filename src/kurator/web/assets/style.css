@@ -144,3 +144,7 @@ button.danger.armed { background:#b91c1c; border-color:#fca5a5; animation:armed 
 @keyframes armed { 0%,100% { opacity:1 } 50% { opacity:.55 } }
 button.danger:disabled { background:#3f1f1f; border-color:#3f1f1f; color:#9ca3af;
   opacity:.6; cursor:not-allowed; }
+
+/* «Обновить индекс» и пометка о последнем проходе в столбик */
+.indexblock { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
+.indexblock .indexnote { padding-left:2px; }
