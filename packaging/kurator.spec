@@ -47,7 +47,15 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     # Стандартная библиотека целиком весит больше самой программы.
-    excludes=["tkinter", "unittest", "pydoc_data", "test"],
+    # Всё это в поставке не нужно, а места занимает прилично: тесты
+    # numpy тянут за собой половину стандартной библиотерии.
+    excludes=[
+        "tkinter", "unittest", "pydoc_data", "test", "tests",
+        "numpy.testing", "numpy.f2py", "numpy.distutils",
+        "PIL.ImageQt", "PIL.ImageShow", "PIL.ImageTk",
+        "lib2to3", "distutils", "idlelib", "turtledemo", "sqlite3.test",
+        "email.mime.image", "ctypes.wintypes",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
@@ -67,7 +75,9 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=False,
+    # Отладочные символы в .app весят десятки мегабайт, а в установщике
+    # им не место. Подпись делается после, поэтому порядок безопасен.
+    strip=True,
     upx=False,
     name="kurator",
 )

@@ -59,7 +59,9 @@ kurator
 
 Приложение работает только на Apple Silicon и только офлайн.
 EOF
-hdiutil create -volname "kurator" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+# ULFO — это LZFSE, он жмёт заметно сильнее zlib из UDZO, а разница
+# в размере образа здесь и решает, влезет ли установщик в лимит GitHub.
+hdiutil create -volname "kurator" -srcfolder "$STAGE" -ov -format ULFO "$DMG" >/dev/null
 rm -rf "$STAGE"
 
 echo
