@@ -393,7 +393,7 @@ def analyze(
     strong_cosine: float = NEAR_DUP_COSINE_STRONG,
     include_burst: bool = True,
 ) -> tuple[list[Group], set[str]]:
-    """Полный разбор фотопарки. Единая точка входа для всех команд."""
+    """Полный разбор фотографий. Единая точка входа для всех команд."""
     groups = exact_groups(photos) + near_groups(
         photos,
         phash_distance,

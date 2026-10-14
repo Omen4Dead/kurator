@@ -28,7 +28,7 @@ KIND_ORDER = [EXACT, NEAR_STRONG, NEAR_WEAK, BURST]
 
 HTML_TEMPLATE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
-<title>kurator — разбор фотопарка</title>
+<title>kurator — разбор фотографий</title>
 <style>
  :root {{ color-scheme: dark; }}
  body {{ background:#18181b; color:#e4e4e7; font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
@@ -126,7 +126,7 @@ def build_report(
 
 def _header(root: Path, photos: list[Photo]) -> list[str]:
     return [
-        "# kurator — разбор фотопарка",
+        "# kurator — разбор фотографий",
         "",
         f"- корень: `{root}`",
         f"- снимков в индексе: {len(photos)}",
@@ -239,7 +239,7 @@ def _html(
 ) -> str:
     esc = html.escape
     parts: list[str] = [
-        "<h1>kurator — разбор фотопарка</h1>",
+        "<h1>kurator — разбор фотографий</h1>",
         f'<p class="sub"><code>{esc(str(root))}</code> · снимков в индексе: {len(index)} · '
         f"модель <code>{esc(MODEL_REPO)}</code> локально</p>",
         '<div class="warn">Ничего не удаляется: файлы только переносятся в '

@@ -461,7 +461,7 @@ def cmd_undo(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kurator",
-        description="Офлайновый разбор фотопарка: дубликаты, near-dupes, визуальные кластеры.",
+        description="Офлайновый разбор фотографий: дубликаты, near-dupes, визуальные кластеры.",
     )
     parser.add_argument("--version", action="version", version=f"kurator {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -472,7 +472,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_models)
 
     p = sub.add_parser("index", help="построить или обновить индекс")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.add_argument("--model", help="путь к onnx")
     p.add_argument("--download", action="store_true", help="скачать веса, если их нет")
     p.add_argument("--no-embeddings", action="store_true", help="только хеши, без модели")
@@ -480,17 +480,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_index)
 
     p = sub.add_parser("backfill", help="досчитать эмбеддинги для уже проиндексированных")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.add_argument("--model", help="путь к onnx")
     p.add_argument("--download", action="store_true", help="скачать веса, если их нет")
     p.set_defaults(func=cmd_backfill)
 
     p = sub.add_parser("stats", help="что в индексе")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.set_defaults(func=cmd_stats)
 
     p = sub.add_parser("dups", help="показать группы дубликатов")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.add_argument("--min-size", type=int, default=2, help="минимальный размер группы")
     p.add_argument("--limit", type=int, default=25, help="сколько групп показать")
     p.add_argument("--skip-burst", action="store_true", help="не показывать burst")
@@ -499,7 +499,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_dups)
 
     p = sub.add_parser("clusters", help="визуальные кластеры по эмбеддингам")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.add_argument("--threshold", type=float, default=CLUSTER_COSINE, help="порог косинуса")
     p.add_argument("--min-size", type=int, default=3, help="минимальный размер кластера")
     p.add_argument("--limit", type=int, default=20, help="сколько кластеров показать")
@@ -507,7 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_clusters)
 
     p = sub.add_parser("evaluate", help="замерить точность дедупа против эталонной разметки")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.add_argument("--sweep", action="store_true", help="перебрать пороги в таблице")
     p.add_argument("--notes", type=int, default=20, help="сколько расхождений показать")
     _add_tuning_flags(p)
@@ -523,11 +523,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_ui)
 
     p = sub.add_parser("calibrate", help="подобрать пороги near-дублей по своим фото")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.set_defaults(func=cmd_calibrate)
 
     p = sub.add_parser("report", help="markdown + html + контакт-листы")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.add_argument("--out", help="куда положить отчёт (по умолчанию <root>/out)")
     p.add_argument("--no-sheets", action="store_true", help="без картинок")
     p.add_argument("--max-groups", type=int, default=40, help="листов на категорию")
@@ -535,7 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("apply", help="перенести кандидатов в карантин")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.add_argument(
         "--kind",
         default="exact",
@@ -548,7 +548,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_apply)
 
     p = sub.add_parser("undo", help="вернуть последний перенос обратно")
-    p.add_argument("root", nargs="?", default=".", help="корень фотопарки")
+    p.add_argument("root", nargs="?", default=".", help="папка с фотографиями")
     p.add_argument("--yes", action="store_true", help="выполнить")
     p.set_defaults(func=cmd_undo)
 
