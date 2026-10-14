@@ -534,3 +534,99 @@ def test_migration_is_idempotent(tmp_path):
     assert first["moved"] == 1
     assert second["moved"] == 0
     assert (quarantine_root(tmp_path) / "a.jpg").is_file()
+
+
+def test_prune_drops_manifests_without_any_file(tmp_path):
+    """Манифест, чьих файлов уже нет, истории не нужен.
+
+    Регрессия: такие манифесты копились годами. Чистит только их,
+    поэтому ошибка в одном манифесте не съедает остальные переносы.
+    """
+    from kurator.quarantine import apply_moves, plan_moves, prune_stale_manifests
+
+    store = make_store(tmp_path)
+    apply_moves(store, plan_moves(tmp_path, ["b.txt"]), kind="by-hand", dry_run=False)
+    stale = quarantine_root(tmp_path) / "manifest_by-hand_ghost.json"
+    stale.write_text(
+        '{"kind":"by-hand","root":"%s","created_at":"2026-01-01T00:00:00",'
+        '"count":1,"bytes":0,"moves":[{"from":"ghost.txt",'
+        '"to":"_kurator_quarantine/ghost.txt"}]}' % tmp_path,
+        encoding="utf-8",
+    )
+
+    result = prune_stale_manifests(store)
+
+    assert result["manifests"] == 1, "исчезнувший перенос должен уйти"
+    assert stale.is_file() is False
+    assert len(list_runs_live(store)) == 1, "живой перенос обязан уцелеть"
+    store.close()
+
+
+def test_prune_drops_empty_manifests(tmp_path):
+    """Пустой перенос (`moves: []`) — тоже мусор."""
+    from kurator.quarantine import apply_moves, plan_moves, prune_stale_manifests
+
+    store = make_store(tmp_path)
+    apply_moves(store, plan_moves(tmp_path, ["b.txt"]), kind="by-hand", dry_run=False)
+    empty = quarantine_root(tmp_path) / "manifest_by-hand_empty.json"
+    empty.write_text('{"kind":"by-hand","root":"%s","moves":[]}' % tmp_path, encoding="utf-8")
+
+    prune_stale_manifests(store)
+
+    assert empty.is_file() is False
+    assert len(list_runs_live(store)) == 1
+    store.close()
+
+
+def test_delete_trash_also_cleans_history_of_dead_runs(tmp_path):
+    """После «удалить всё» в карантине не остаётся манифестов и записей."""
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, delete_trash, list_trash, plan_moves
+
+    store = Store.open(tmp_path)
+    for name in ("a.jpg", "b.jpg"):
+        p = tmp_path / name
+        p.write_bytes(name.encode() * 8)
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+    for name in ("a.jpg", "b.jpg"):
+        apply_moves(store, plan_moves(tmp_path, [name]), kind="by-hand", dry_run=False)
+
+    # манифест от несуществующего переноса, как остаётся после старых багов
+    ghost = quarantine_root(tmp_path) / "manifest_by-hand_ghost.json"
+    ghost.write_text(
+        '{"kind":"by-hand","root":"%s","moves":[{"from":"z.jpg",'
+        '"to":".kurator/quarantine/z.jpg"}]}' % tmp_path,
+        encoding="utf-8",
+    )
+
+    keys = [i["key"] for i in list_trash(store)]
+    result = delete_trash(store, keys)
+
+    assert result["deleted"] == 2
+    assert ghost.is_file() is False, "мусорный манифест обязан уйти вместе с остальными"
+    assert list(list(quarantine_root(tmp_path).glob("*.json"))) == []
+    assert store.query("SELECT * FROM runs") == []
+    store.close()
+
+
+def list_runs_live(store):
+    from kurator.quarantine import list_runs
+
+    return [r for r in list_runs(store) if r["paths"]]
+
+
+def test_prune_counts_rows_once(tmp_path):
+    """Каждая запись о переносе учитывается один раз, даже если чистится
+    и по манифесту, и как потерянная."""
+    from kurator.quarantine import apply_moves, plan_moves, prune_stale_manifests
+
+    store = make_store(tmp_path)
+    apply_moves(store, plan_moves(tmp_path, ["b.txt"]), kind="by-hand", dry_run=False)
+
+    result = prune_stale_manifests(store)
+
+    assert result["manifests"] == 0, "живой манифест не трогаем"
+    assert result["rows"] == 0, "живую запись не вычищаем"
+    store.close()

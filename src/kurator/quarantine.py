@@ -368,6 +368,62 @@ def list_trash(store: Store) -> list[dict]:
     return items
 
 
+def prune_stale_manifests(store: Store) -> dict:
+    """Убрать манифесты, от которых откатывать уже нечего.
+
+    Манифест нужен ровно для одного — вернуть файлы по адресам из
+    `moves`. Если перенос пустой или ни одного файла из него не
+    осталось на диске, манифест бесполезен: он только занимает место и
+    показывается в истории как живой перенос.
+
+    Отдельно вычищаются записи о переносах, чей манифест вообще не
+    нашёлся: они тоже ничего не описывают.
+    """
+    root = store.root
+    base = quarantine_root(root)
+    removed = {"manifests": 0, "rows": 0}
+    if not base.is_dir():
+        store.commit()
+        return removed
+
+    live_rows = {int(r["id"]): Path(r["manifest"]) for r in store.query("SELECT id, manifest FROM runs")}
+    dropped: set[int] = set()
+
+    for manifest in sorted(base.glob("*.json")):
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        moves = payload.get("moves", [])
+        alive = [m for m in moves if (root / m.get("to", "")).is_file()]
+        if moves and alive:
+            continue
+        try:
+            manifest.unlink()
+            removed["manifests"] += 1
+        except OSError:
+            continue
+        for run_id, path in live_rows.items():
+            if path.name == manifest.name and run_id not in dropped:
+                store.delete_run(run_id)
+                dropped.add(run_id)
+                removed["rows"] += 1
+
+    # Записи, чей манифест не нашёлся ни по старому адресу, ни в папке
+    # карантина, тоже ничего не описывают.
+    for run_id, path in live_rows.items():
+        if run_id in dropped:
+            continue
+        if not path.is_file() and not (base / path.name).is_file():
+            store.delete_run(run_id)
+            dropped.add(run_id)
+            removed["rows"] += 1
+
+    _prune_empty_dirs(base)
+    store.commit()
+    return removed
+
+
 def delete_trash(store: Store, keys: list[str]) -> dict:
     """Удалить из карантина навсегда.
 
@@ -438,5 +494,9 @@ def delete_trash(store: Store, keys: list[str]) -> dict:
             pass
 
     _prune_empty_dirs(base)
+    # Переносы, от которых после удаления ничего не осталось, манифестами
+    # больше не описываются: иначе история будет годами показывать
+    # перенос, которого на диске нет.
+    prune_stale_manifests(store)
     store.commit()
     return {"deleted": len(deleted), "bytes": freed, "failed": failed}
