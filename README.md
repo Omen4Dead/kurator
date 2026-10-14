@@ -2,6 +2,16 @@
   <img src="assets/icon-256.png" width="128" height="128" alt="kurator">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Omen4Dead/kurator/releases/latest">
+    <img src="https://img.shields.io/badge/скачать-kurator--0.1.0-E8590C?style=for-the-badge" alt="Скачать kurator 0.1.0">
+  </a>
+</p>
+
+<p align="center"><sub>
+Установщик для macOS (Apple Silicon), офлайн. <a href="https://github.com/Omen4Dead/kurator/releases/latest">kurator.dmg</a>
+</sub></p>
+
 # kurator
 
 Офлайновый разбор фотопарка: находит точные дубликаты, визуально похожие кадры
