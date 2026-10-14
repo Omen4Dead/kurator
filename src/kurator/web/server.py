@@ -18,6 +18,7 @@ import webbrowser
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import __version__
@@ -173,6 +174,20 @@ class State:
         self._stop = threading.Event()
         self.root = root.resolve()
         self.store = Store.open(self.root)
+        # Как погасить сервер. Заполняется в serve(): сам сервер туда
+        # положить не может, он появляется позже.
+        self.stop_server: Callable[[], None] | None = None
+
+    def request_stop(self) -> None:
+        """Попросить сервер завершиться.
+
+        Гонять `httpd.shutdown()` из потока обработчика нельзя: он
+        ждёт окончания цикла обслуживания, а цикл ждёт обработчика.
+        Поэтому остановку всегда откладывают отдельным потоком.
+        """
+        if self.stop_server is None:
+            raise RuntimeError("сервер не запущен")
+        threading.Timer(0.4, self.stop_server).start()
 
     def switch_root(self, path: Path) -> dict:
         """Смена папки: другое дерево, другая база, чистый кэш превью."""
@@ -559,6 +574,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json(result)
             return
 
+        if route == "/api/quit":
+            # Отвечаем сразу, а гасим сервер чуть позже: иначе ответ
+            # не успеет уйти и браузер увидит оборванное соединение
+            # вместо подтверждения.
+            self._json({"quitting": True})
+            try:
+                self.state.request_stop()
+            except RuntimeError:
+                pass
+            return
+
         if route == "/api/tuning":
             store = self.state.store
             if body.get("phash") is not None:
@@ -732,6 +758,7 @@ def serve(root: Path | None, host: str = "127.0.0.1", port: int = 8765, open_bro
     handler = type("BoundHandler", (Handler,), {"state": state})
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
+    state.stop_server = httpd.shutdown
 
     url = f"http://{host}:{port}/?token={state.token}"
     print(f"kurator {__version__}")
@@ -748,6 +775,7 @@ def serve(root: Path | None, host: str = "127.0.0.1", port: int = 8765, open_bro
     finally:
         state.close()
         httpd.server_close()
+        print("остановлено")
 
 
 def resolve_port(preferred: int) -> int:

@@ -148,3 +148,10 @@ button.danger:disabled { background:#3f1f1f; border-color:#3f1f1f; color:#9ca3af
 /* «Обновить индекс» и пометка о последнем проходе в столбик */
 .indexblock { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
 .indexblock .indexnote { padding-left:2px; }
+
+/* Страница прощания: сервер погашен, вкладка остаётся живой */
+body.farewell { display:grid; place-items:center; min-height:100vh; }
+.farewell-box { text-align:center; max-width:420px; padding:24px; }
+.farewell-mark { font-size:64px; margin:0 0 8px; line-height:1; }
+.farewell-box h1 { font-size:20px; margin:0 0 14px; }
+.farewell-box .small { font-size:12px; }

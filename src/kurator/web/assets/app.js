@@ -25,6 +25,27 @@ async function api(path, options = {}) {
   return payload;
 }
 
+// Сервер гаснет, пока вкладка ещё открыта. Обычная ошибка тут
+// обманывает: кажется, что что-то сломалось, хотя всё в порядке —
+// просто пора закрывать вкладку.
+function offlineError(err) {
+  if (err instanceof TypeError) return new Error("kurator больше не отвечает");
+  return err;
+}
+
+function showFarewell() {
+  document.body.classList.add("farewell");
+  document.body.innerHTML = `
+    <div class="farewell-box">
+      <p class="farewell-mark">🐔</p>
+      <h1>kurator остановлен</h1>
+      <p class="muted">Сервер погашен, папка с фотографиями не тронута.<br>
+        Карантин и индекс остались на диске ровно там, где были.</p>
+      <p class="muted small">Запустить снова: откройте kurator в «Программах»
+        или выполните <code>kurator ui</code>. Эту вкладку можно закрыть.</p>
+    </div>`;
+}
+
 function whenRu(stamp) {
   return new Date(stamp * 1000).toLocaleString("ru-RU",
     { dateStyle: "short", timeStyle: "short" });
@@ -562,7 +583,12 @@ $("btn-undo").onclick = async () => {
 loadState()
   .then(() => Promise.all([loadFindings(), loadStrips(), refreshSituation(), loadTrashCount()]))
   .then(() => render())
-  .catch((err) => toast(err.message, true));
+  .catch((err) => {
+    // Открытая вкладка после выхода или после аварии сервера:
+    // объясняем, что случилось, вместо голого «Failed to fetch».
+    if (err instanceof TypeError) { showFarewell(); return; }
+    toast(offlineError(err).message, true);
+  });
 /* ---- Корзина: содержимое карантина, удаление выбранного или всего ---- */
 
 state.trash = { items: [], chosen: new Set(), armed: null };
@@ -688,4 +714,25 @@ $("trash-confirm").onclick = () => {
 $("trash-wipe").onclick = () => {
   if (state.trash.armed !== "all") { state.trash.armed = "all"; renderTrash(); return; }
   runTrashDelete("all");
+};
+
+/* ---- Выход: погасить сервер и уйти по-человечески ---- */
+
+$("btn-quit").onclick = async () => {
+  const busy = document.querySelectorAll("header button");
+  busy.forEach((b) => { b.disabled = true; });
+  if (!confirm(
+    "Остановить kurator?\n\n" +
+    "Индекс и карантин останутся на диске, фотографии не пострадают.\n" +
+    "Запустить снова можно будет двойным щелчком по значку."
+  )) {
+    busy.forEach((b) => { b.disabled = false; });
+    return;
+  }
+  try {
+    await api("/api/quit", { method: "POST", body: "{}" });
+  } catch (err) {
+    // Сервер не ответил — значит, он уже ушёл. Это не ошибка.
+  }
+  showFarewell();
 };
