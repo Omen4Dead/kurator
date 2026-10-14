@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -79,6 +80,12 @@ def default_model_path() -> Path:
     env = os.environ.get("KURATOR_MODEL")
     if env:
         return Path(env).expanduser()
+    if getattr(sys, "frozen", False):
+        # В собранном приложении исходников нет, и PROJECT_ROOT указывает
+        # внутрь бандла. Весы кладутся рядом с интерпретатором, поэтому
+        # ищем их там, где PyInstaller действительно распаковал данные.
+        base = Path(getattr(sys, "_MEIPASS", "") or Path(sys.executable).resolve().parent)
+        return base / "models" / MODEL_FILENAME
     return PROJECT_ROOT / "models" / MODEL_FILENAME
 
 

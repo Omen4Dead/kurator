@@ -13,10 +13,14 @@ dependencies = [
 
 [project.scripts]
 kurator = "kurator.cli:main"
+kurator-desktop = "kurator.desktop:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.2",
+    # Сборочная зависимость: в рантайме не участвует, нужна только
+    # для сборки .app и .dmg. См. packaging/build.sh.
+    "pyinstaller>=6.10",
 ]
 
 [build-system]
