@@ -45,6 +45,10 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          # Версию Python надо назвать явно. Иначе uv берёт ту, что стоит на
+          # образе: на macos-latest это homebrew 3.15, а wheels onnxruntime
+          # для неё не существует и сборка падает на ровном месте.
+          python-version: ${{ matrix.python }}
 
       - name: pytest без весов
         env:
@@ -65,6 +69,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: "3.13"
 
       - name: Кэш весов
         uses: actions/cache@v4
