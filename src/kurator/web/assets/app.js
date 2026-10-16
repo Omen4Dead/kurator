@@ -2,7 +2,11 @@ const TOKEN = window.KURATOR_TOKEN;
 const $ = (id) => document.getElementById(id);
 
 const state = {
-  tab: "exact",
+  // Точные дубли — последняя вкладка: их мало, проверяются быстро и
+  // новые появляются нечасто. Первая вкладка открывается по умолчанию,
+  // поэтому дефолт должен совпадать с ней, иначе интерфейс включается
+  // на пустой третьей вкладке.
+  tab: "near-strong",
   factory: { phash: 10, cosine: 0.9 },
   skipped: {},
   groups: [],
