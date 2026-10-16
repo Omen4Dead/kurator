@@ -100,7 +100,16 @@ def too_broad(path: Path) -> bool:
     # POSIX это и так корень, а на Windows — корень тома.
     if raw in ("\\", "/", "\\/", "//"):
         return True
-    return not any(path.iterdir()) if path.is_dir() else False
+    # Пути, которых нет, `is_dir` не роняет, а вот `iterdir` на папке,
+    # в которую нельзя войти, — может. Проверка «пустая ли папка» не должна
+    # ронять выбор папки в интерфейсе.
+    try:
+        if not path.is_dir():
+            return False
+        next(iter(path.iterdir()), None)
+        return False
+    except OSError:
+        return True
 
 
 def index_status(path: Path) -> dict | None:

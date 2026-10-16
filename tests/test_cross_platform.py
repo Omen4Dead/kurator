@@ -148,3 +148,135 @@ def test_pull_model_script_has_no_macos_only_tools():
     assert "sha256sum" in text, "нет запасного пути без shasum"
     # `shasum` остаётся как запасной вариант для macOS, поэтому само по
     # себе упоминание не считается проблемой.
+
+def test_index_key_ignores_case(tmp_path):
+    """Ключ индекса не должен зависеть от регистра имени.
+
+    На Windows и macOS `IMG_1.JPG` и `img_1.jpg` — один и тот же файл:
+    файловая система регистр не различает, второй файл туда просто не
+    запишется. А индекс обязан различать, иначе при переиндексации оба
+    ключа оказываются в `known_state` с одинаковым размером и mtime, и
+    инкрементальная индексация объявляет «не изменился» сразу двум.
+
+    Проверка на настоящем индексе, а не на строке: `rel_path UNIQUE` в
+    SQLite регистрозависим, и это как раз то, что приходилось обходить.
+    """
+    from kurator.db import Photo, Store
+
+    store = Store.open(tmp_path)
+    # Один и тот же файл, записанный под разным регистром. На ФС, которая
+    # регистр не различает, второй записи там просто не будет — а в индексе
+    # она появится, если ключ регистрозависим.
+    for name in ("IMG_1.JPG", "img_1.jpg"):
+        store.upsert(Photo(rel_path=name, size=32, mtime=1000.0, md5="same"))
+    store.commit()
+
+    # Из двух записей остаётся одна: это один файл.
+    rows = store.query("SELECT rel_path, rel_key FROM photos")
+    assert len(rows) == 1, f"в индексе {len(rows)} записей на один файл: {[r['rel_path'] for r in rows]}"
+
+    # known_state отдаёт регистронезависимый ключ — иначе инкрементальная
+    # индексация не найдёт файл, переименованный только регистром.
+    known = store.known_state()
+    assert len(known) == 1
+    (key,) = known
+    assert key == key.casefold()
+    assert key == "img_1.jpg"
+
+    store.close()
+
+
+def test_different_files_keep_separate_rows(tmp_path):
+    """Схлопывание не должно пожирать разные файлы.
+
+    Регрессия-страховка к тесту выше: если ключ Made регистронезависимым
+    слишком широко, `IMG_1.JPG` и `PHOTO.JPG` склеятся в одну запись и
+    один снимок выпадет из индекса молча.
+    """
+    from kurator.db import Photo, Store
+
+    store = Store.open(tmp_path)
+    for name in ("IMG_1.JPG", "PHOTO.JPG", "img_2.jpg"):
+        store.upsert(Photo(rel_path=name, size=10, mtime=1000.0, md5=f"md5-{name}"))
+    store.commit()
+
+    rows = store.query("SELECT rel_path FROM photos")
+    assert len(rows) == 3, f"разные файлы схлопнулись: {[r['rel_path'] for r in rows]}"
+    assert len(store.known_state()) == 3
+
+    store.close()
+
+
+def test_rel_path_keeps_original_spelling(tmp_path):
+    """Ключ регистронезависимый, а показываемое имя — как на диске.
+
+    Иначе в отчёте и в интерфейсе у человека окажется `img_1.jpg` вместо
+    `IMG_1.JPG`, и он не найдёт файл тем именем, которым его называл сам.
+    """
+    from kurator.db import Photo, Store
+
+    store = Store.open(tmp_path)
+    target = tmp_path / "IMG_1.JPG"
+    target.write_bytes(b"y" * 16)
+    info = target.stat()
+    store.upsert(
+        Photo(rel_path="IMG_1.JPG", size=info.st_size, mtime=info.st_mtime, md5="m")
+    )
+    store.commit()
+
+    (row,) = store.query("SELECT rel_path, rel_key FROM photos")
+
+    assert row["rel_path"] == "IMG_1.JPG", "исходное написание потерялось"
+    assert row["rel_key"] == "img_1.jpg"
+    store.close()
+
+
+def test_migration_fills_rel_key_on_old_database(tmp_path):
+    """Старая база без `rel_key` должна доехать до рабочего состояния.
+
+    `CREATE TABLE IF NOT EXISTS` не добавляет колонки в уже созданную
+    таблицу, поэтому архив, проиндексированный до этой правки, вёл бы
+    себя как схема без ключа. Миграция обязана и добавить колонку, и
+    заполнить её, и схлопнуть записи, отличающиеся регистром.
+    """
+    import sqlite3
+
+    from kurator.db import db_path
+
+    db_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path(tmp_path))
+    # Схема в том виде, какой была до появления rel_key.
+    conn.executescript(
+        """
+        CREATE TABLE photos (
+            id INTEGER PRIMARY KEY,
+            rel_path TEXT NOT NULL UNIQUE,
+            size INTEGER NOT NULL,
+            mtime REAL NOT NULL,
+            md5 TEXT, phash TEXT, dhash TEXT, taken_at TEXT,
+            width INTEGER, height INTEGER,
+            embed BLOB, embed_model TEXT, embed_dim INTEGER,
+            is_video INTEGER NOT NULL DEFAULT 0, indexed_at REAL
+        );
+        INSERT INTO photos (rel_path, size, mtime, md5)
+        VALUES ('IMG_1.JPG', 10, 1000.0, 'a');
+        INSERT INTO photos (rel_path, size, mtime, md5)
+        VALUES ('img_1.jpg', 10, 1000.0, 'b');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    from kurator.db import Store
+
+    store = Store.open(tmp_path)
+
+    columns = {r["name"] for r in store.conn.execute("PRAGMA table_info(photos)")}
+    assert "rel_key" in columns, "миграция не добавила колонку"
+
+    rows = store.query("SELECT rel_path, rel_key FROM photos")
+    assert len(rows) == 1, f"записи не схлопнулись: {[r['rel_path'] for r in rows]}"
+    assert rows[0]["rel_key"] == rows[0]["rel_path"].casefold()
+    assert len(store.known_state()) == 1
+
+    store.close()

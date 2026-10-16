@@ -50,6 +50,24 @@ jobs:
           # для неё не существует и сборка падает на ровном месте.
           python-version: ${{ matrix.python }}
 
+      # Скрипт, которым Windows-пользователь тянет веса: на этой системе
+      # нет bash, поэтому `pull-model.sh` недоступен. Локально проверить его
+      # нечем — pwsh на машине разработчика может стоять, а может и нет, —
+      # а ломается он как раз у того, кто ставит kurator впервые.
+      - name: Синтаксис pull-model.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "${{ github.workspace }}/scripts/pull-model.ps1", [ref]$null, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "синтаксис в порядке"
+
       - name: pytest без весов
         env:
           # Путь, которого нет: тесты с моделью должны пропуститься, а не

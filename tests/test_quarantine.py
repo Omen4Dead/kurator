@@ -1,7 +1,7 @@
 import datetime as dt
 import json
 import shutil
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from kurator.config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME
 from kurator.db import Store
@@ -215,25 +215,39 @@ def test_index_status_survives_missing_meta(tmp_path):
     assert status["last_index_at"] is None
 
 
-def test_blocked_roots_are_rejected():
+def test_blocked_roots_are_rejected(tmp_path):
+    """Корни, с которыми kurator не должен работать, помечены.
+
+    Проверяется через `PurePosixPath` и `PureWindowsPath`, а не через
+    `Path`: `Path` на каждой системе даёт свой путь, и проверка вроде
+    `too_broad(Path("/System"))` на Windows утверждала бы POSIX-поведение
+    там, где такого пути и корня нет. Это был красный тест на Windows,
+    который искал баг в отсутствующем месте.
+    """
     from kurator.web.server import too_broad
 
-    assert too_broad(Path("/")) is True
-    assert too_broad(Path("/System")) is True
+    # POSIX: корень и системные каталоги, куда лезть бессмысленно.
+    for posix_root in ("/", "/bin", "/etc", "/System", "/usr", "/var"):
+        assert too_broad(PurePosixPath(posix_root)) is True, posix_root
 
-    # Корни томов Windows: буквы дисков заранее не перечислишь, ловим на
-    # лету. Без этого указал бы kurator на `C:\` — и он пошёл бы обходить
-    # всю систему. `PureWindowsPath` разбирается как Windows на любой
-    # системе, поэтому проверка работает и на macOS.
-    assert too_broad(PureWindowsPath("C:\\")) is True
-    assert too_broad(PureWindowsPath("d:/")) is True
+    # Windows: корни томов. Буквы дисков заранее не перечислишь, поэтому
+    # они ловятся регуляркой, а не списком. Без этого указал бы kurator
+    # на `C:\` — и он пошёл бы обходить всю систему.
+    for win_root in ("C:\\", "d:/", "Z:\\"):
+        assert too_broad(PureWindowsPath(win_root)) is True, win_root
 
-    # `Path("/")` на Windows — это корень текущего диска, а не корень
-    # файловой системы. Он обязан быть помечен, иначе выбор папки в
-    # интерфейсе отдаст kurator весь том. Проверяем через строку, потому
-    # что на POSIX `Path("/")` и так в списке.
+    # Голый разделитель: на POSIX это корень системы, на Windows — корень
+    # текущего тома. Второй случай опаснее и тоже обязан быть помечен.
     assert too_broad(PureWindowsPath("/")) is True
     assert too_broad(PureWindowsPath("\\")) is True
+
+    # А вот обычная папка помечена быть не должна — иначе kurator
+    # откажется работать там, где ему положено работать. Здесь путь
+    # настоящий: `PurePosixPath` не умеет `is_dir()`, а `too_broad`
+    # обращается к диску для папок, которых нет в списке.
+    archive = Path(tmp_path) / "Photos"
+    archive.mkdir()
+    assert too_broad(archive) is False
 
 
 def test_dry_run_writes_nothing(tmp_path):

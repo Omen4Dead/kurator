@@ -22,6 +22,9 @@ PRAGMA busy_timeout=15000;
 CREATE TABLE IF NOT EXISTS photos (
     id           INTEGER PRIMARY KEY,
     rel_path     TEXT    NOT NULL UNIQUE,
+    -- Тот же путь в нижнем регистре. Нужен там, где ФС регистр не
+    -- различает, а индекс обязан: см. idx_photos_relkey ниже.
+    rel_key      TEXT,
     size         INTEGER NOT NULL,
     mtime        REAL    NOT NULL,
     md5          TEXT,
@@ -40,6 +43,11 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE INDEX IF NOT EXISTS idx_photos_md5   ON photos(md5);
 CREATE INDEX IF NOT EXISTS idx_photos_phash ON photos(phash);
 CREATE INDEX IF NOT EXISTS idx_photos_embed ON photos(embed_model);
+
+-- Индекс по rel_key намеренно создаётся не здесь, а в `_add_rel_key`.
+-- `executescript(SCHEMA)` идёт ДО миграции, и на базе, проиндексированной
+-- до появления колонки, объявление индекса упало бы с «no such column:
+-- rel_key» — то есть любая старая база перестала бы открываться.
 
 CREATE TABLE IF NOT EXISTS decisions (
     group_sig  TEXT PRIMARY KEY,
@@ -72,6 +80,39 @@ CREATE TABLE IF NOT EXISTS decisions_v2 (
 """
 
 
+def _add_rel_key(conn: sqlite3.Connection) -> None:
+    """Довести регистронезависимый ключ индекса до рабочего состояния.
+
+    Колонки у `CREATE TABLE IF NOT EXISTS` не появляются сами, поэтому у
+    архива, проиндексированного до этой правки, её просто не будет.
+
+    Индекс создаётся всегда, а не только на старой базе: на новой колонка
+    уже есть, миграция выходит рано — и без отдельного `CREATE INDEX IF
+    NOT EXISTS` индекс не появился бы никогда. Он молча необязателен для
+    правильности, и в этом его опасность.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(photos)")}
+    if not columns:
+        return
+    if "rel_key" not in columns:
+        conn.execute("ALTER TABLE photos ADD COLUMN rel_key TEXT")
+        # SQLite не умеет вычисление в части ALTER, поэтому ключ считаем
+        # отдельно. rel_path уже нормализован через «/», а сравнение
+        # регистронезависимо ровно то, что нужно ФС на Windows и macOS.
+        conn.execute("UPDATE photos SET rel_key = lower(rel_path) WHERE rel_key IS NULL")
+        # Если два файла отличались только регистром, в индексе это две
+        # строки про один файл. Оставляем написание, записанное последним:
+        # walk отдаёт файлы отсортированными, и выбор детерминирован.
+        conn.execute(
+            """
+            DELETE FROM photos WHERE id NOT IN (
+                SELECT MAX(id) FROM photos GROUP BY lower(rel_path)
+            )
+            """
+        )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_relkey ON photos(rel_key)")
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Привести старую базу к текущей схеме.
 
@@ -80,6 +121,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     Старые решения хранили пропуск по файлу, группа — по отпечатку.
     Переносим как есть, отпечаток пересчитается при первом действии.
     """
+    _add_rel_key(conn)
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(decisions)")}
     if not columns:
         return
@@ -180,9 +222,18 @@ class Store:
             return row["v"] if row else default
 
     def known_state(self) -> dict[str, tuple[int, float]]:
+        """Размер и mtime по каждому файлу, для инкрементальной индексации.
+
+        Ключ здесь — регистронезависимый: на Windows и macOS `IMG_1.JPG` и
+        `img_1.jpg` это один файл, и при регистрозависимом ключе
+        инкрементальная индексация объявляла «не изменился» обоим.
+        """
         with self.lock:
-            rows = self.conn.execute("SELECT rel_path, size, mtime FROM photos").fetchall()
-        return {r["rel_path"]: (r["size"], r["mtime"]) for r in rows}
+            rows = self.conn.execute("SELECT rel_key, rel_path, size, mtime FROM photos").fetchall()
+        return {
+            (r["rel_key"] or r["rel_path"]).casefold(): (r["size"], r["mtime"])
+            for r in rows
+        }
 
     def forget(self, rel_paths: list[str]) -> None:
         if not rel_paths:
@@ -199,14 +250,25 @@ class Store:
         else:
             blob = np.asarray(embed, dtype=np.float32).tobytes()
             dim = int(np.asarray(embed).shape[0])
+        # rel_key живёт рядом с rel_path, но не заменяет его: в отчёте и в
+        # интерфейсе имя должно быть как на диске.
+        rel_key = photo.rel_path.casefold()
         with self.lock:
+            # Один файл на регистронезависимой ФС — одна запись. Переименование
+            # только регистра меняет rel_path, и без этого старая строка
+            # осталась бы жить рядом с новой.
+            self.conn.execute(
+                "DELETE FROM photos WHERE rel_key=? AND rel_path<>?",
+                (rel_key, photo.rel_path),
+            )
             self.conn.execute(
                 """
                 INSERT INTO photos
-                    (rel_path, size, mtime, md5, phash, dhash, taken_at, width, height,
+                    (rel_path, rel_key, size, mtime, md5, phash, dhash, taken_at, width, height,
                      embed, embed_model, embed_dim, is_video, indexed_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(rel_path) DO UPDATE SET
+                    rel_key=excluded.rel_key,
                     size=excluded.size, mtime=excluded.mtime, md5=excluded.md5,
                     phash=excluded.phash, dhash=excluded.dhash, taken_at=excluded.taken_at,
                     width=excluded.width, height=excluded.height,
@@ -217,6 +279,7 @@ class Store:
                 """,
                 (
                     photo.rel_path,
+                    rel_key,
                     photo.size,
                     photo.mtime,
                     photo.md5,

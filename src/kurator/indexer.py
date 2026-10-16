@@ -70,12 +70,12 @@ def index_root(
         if only_paths is not None and rel not in only_paths:
             continue
         stats["seen"] += 1
-        present.add(rel)
+        present.add(rel.casefold())
         try:
             info = path.stat()
         except OSError:
             continue
-        previous = known.get(rel)
+        previous = known.get(rel.casefold())
         if previous and previous[0] == info.st_size and previous[1] == info.st_mtime:
             stats["skipped"] += 1
             continue
@@ -211,7 +211,11 @@ def index_paths(root: Path, store: Store, rel_paths: list[str]) -> int:
         store,
         encoder=None,
         rehash=False,
-        known_override={rel: (known[rel][0], known[rel][1]) for rel in present if rel in known},
+        known_override={
+            rel.casefold(): (known[rel.casefold()][0], known[rel.casefold()][1])
+            for rel in present
+            if rel.casefold() in known
+        },
         only_paths=set(present),
     )
     return stats["indexed"]

@@ -85,8 +85,29 @@ uv run kurator models      # проверить, что модель на мес
 ./packaging/build.sh       # dist/kurator.app и dist/kurator.dmg
 ```
 
-Под macOS проверено полностью, есть установщик. Linux работает из исходников.
-**Windows-совместимость пока не реализована**.
+Под macOS проверено полностью, есть установщик. Linux и Windows работают
+из исходников; установщика для них пока нет, и на Windows приложение
+запускается через `kurator ui`.
+
+#### Длинные пути в Windows
+
+Лимит в 260 символов — системный, и реальные архивы в него упираются:
+
+```
+Photos from 2024\Отпуск\Испания\Барселона\IMG_20240704_101112.jpg
+```
+
+Включается один раз через PowerShell от администратора:
+
+```powershell
+New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+  -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+```
+
+После этого нужен вход в систему заново. Ошибки станут заметны сразу:
+`OSError: [Errno 206] Filename or extension is too long`. Если снимок
+не читается, kurator не пропускает его молча — он попадает в счётчик
+`нечитаемых файлов` при индексации.
 
 ## Использование
 
