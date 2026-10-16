@@ -1,13 +1,21 @@
 name: CI
 
 on:
+  # Все ветки, а не только main: пока этап не смержен, его правки проверять
+  # нечем, иначе кроссплатформенные баги (0.1–0.6) годами ждут своего часа
+  # в main. Бонус — красный тест на Linux виден сразу, а не после мержа.
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Ветка получает одну группу и при пуше, и при PR: у пуша это имя ветки,
+  # у PR — имя ветки-источника. Без этого каждый PR гонял бы тесты дважды,
+  # раз по push и раз по pull_request. Новый пуш отменяет старый прогон.
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event_name == 'pull_request' && github.head_ref || github.ref_name
+    }}
   cancel-in-progress: true
 
 jobs:
