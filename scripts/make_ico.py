@@ -55,6 +55,23 @@ def build() -> bytes:
     return buffer.getvalue()
 
 
+def pixels(data: bytes) -> dict[tuple[int, int], bytes]:
+    """Развернуть ICO в пиксели по каждому размеру.
+
+    Сравнивать байты файла нельзя: один и тот же Pillow на macOS и на
+    Linux кодирует ICO по-разному — 41802 байта против 42078 при
+    одинаковых картинках. Кодировщик зависит от системы, а не от входа.
+    Поэтому сверяется то, что действительно важно: сами пиксели.
+    """
+    out: dict[tuple[int, int], bytes] = {}
+    with Image.open(io.BytesIO(data)) as image:
+        for size in sorted(image.info.get("sizes", [])):
+            image.size = size
+            image.load()
+            out[size] = image.convert("RGBA").tobytes()
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -71,14 +88,25 @@ def main() -> None:
             raise SystemExit(
                 f"нет {TARGET.relative_to(ROOT)}. Собери: uv run python scripts/make_ico.py"
             )
-        current = TARGET.read_bytes()
-        if current == fresh:
-            sizes = sorted(Image.open(TARGET).info.get("sizes", []))
-            print(f"иконка свежая, размеры: {sizes}")
+        committed = pixels(TARGET.read_bytes())
+        expected = pixels(fresh)
+
+        if committed == expected:
+            print(f"иконка свежая, размеры: {sorted(committed)}")
             return
+
+        only_old = sorted(set(committed) - set(expected))
+        only_new = sorted(set(expected) - set(committed))
+        differing = sorted(
+            size
+            for size in set(committed) & set(expected)
+            if committed[size] != expected[size]
+        )
         raise SystemExit(
             f"иконка {TARGET.relative_to(ROOT)} разошлась с {SOURCE.name}.\n"
-            f"  в репозитории {len(current)} байт, собирается {len(fresh)}.\n"
+            f"  размеров только в репозитории: {only_old}\n"
+            f"  размеров только в сборке:     {only_new}\n"
+            f"  отличаются пиксели:           {differing}\n"
             f"  Обнови: uv run python scripts/make_ico.py"
         )
 
