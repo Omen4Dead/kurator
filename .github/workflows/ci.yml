@@ -91,8 +91,16 @@ jobs:
       - name: Собрать тестовый архив
         run: uv run python scripts/make_testset.py "$RUNNER_TEMP/kurator-test" 180
 
-      - name: Проиндексировать
-        run: uv run kurator index "$RUNNER_TEMP/kurator-test"
+      # Память меряется на каждом этапе отдельно. `evaluate` печатает
+      # метрики и молчит про расход, из-за чего рост не замечали годами:
+      # на синтетике матрицы расстояний съедают полмегабайта, на живом
+      # архиве те же строки — полтора гигабайта.
+      - name: Индекс (с памятью)
+        run: >-
+          uv run python scripts/measure_rss.py индекс --
+          uv run kurator index "$RUNNER_TEMP/kurator-test"
 
-      - name: Точность против эталона
-        run: uv run kurator evaluate "$RUNNER_TEMP/kurator-test" --sweep
+      - name: Точность против эталона (с памятью)
+        run: >-
+          uv run python scripts/measure_rss.py разбор --
+          uv run kurator evaluate "$RUNNER_TEMP/kurator-test" --sweep
