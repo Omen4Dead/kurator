@@ -10,7 +10,6 @@ from __future__ import annotations
 import io
 import json
 import mimetypes
-import os
 import re
 import sqlite3
 import secrets
@@ -94,10 +93,12 @@ def too_broad(path: Path) -> bool:
         return True
     if _WINDOWS_DRIVE_RE.match(raw):
         return True
-    # Хвост после разделителя тоже должен быть помечен: в Windows путь,
-    # разрешённый системой, выглядит как `C:\`, но на Python с forward
-    # slashes — как `C:/`, а обе формы означают один и тот же корень.
-    if os.name == "nt" and _WINDOWS_DRIVE_RE.match(raw.rstrip("/\\")):
+    # На Windows `Path("/")` — это корень текущего диска, а не корень
+    # файловой системы. Он не проходит ни по списку POSIX-путей, ни под
+    # регулярку выше, и пользователь указал бы kurator на весь диск C:.
+    # Голый разделитель без буквы диска блокируем на всех системах: на
+    # POSIX это и так корень, а на Windows — корень тома.
+    if raw in ("\\", "/", "\\/", "//"):
         return True
     return not any(path.iterdir()) if path.is_dir() else False
 

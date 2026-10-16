@@ -1,8 +1,9 @@
 import datetime as dt
+import json
 import shutil
 from pathlib import Path, PureWindowsPath
 
-from kurator.config import QUARANTINE_DIRNAME
+from kurator.config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME
 from kurator.db import Store
 from kurator.quarantine import apply_moves, plan_moves, quarantine_root, undo_last_run
 
@@ -226,6 +227,13 @@ def test_blocked_roots_are_rejected():
     # системе, поэтому проверка работает и на macOS.
     assert too_broad(PureWindowsPath("C:\\")) is True
     assert too_broad(PureWindowsPath("d:/")) is True
+
+    # `Path("/")` на Windows — это корень текущего диска, а не корень
+    # файловой системы. Он обязан быть помечен, иначе выбор папки в
+    # интерфейсе отдаст kurator весь том. Проверяем через строку, потому
+    # что на POSIX `Path("/")` и так в списке.
+    assert too_broad(PureWindowsPath("/")) is True
+    assert too_broad(PureWindowsPath("\\")) is True
 
 
 def test_dry_run_writes_nothing(tmp_path):
@@ -544,10 +552,25 @@ def test_migration_moves_quarantine_and_keeps_undo_working(tmp_path):
     shutil.move(str(tmp_path / "a.jpg"), str(legacy / "a.jpg"))
     shutil.move(str(tmp_path / "b.jpg"), str(legacy / "b.jpg"))
     manifest = legacy / "manifest_by-hand_1_2.json"
+    # Пишем через json.dumps, а не строкой: на Windows в tmp_path есть
+    # обратные слэши, и такая строка даёт невалидный JSON. Манифест
+    # не читается, миграция его молча пропускает, и тест падает не там,
+    # где дело.
     manifest.write_text(
-        '{"kind":"by-hand","root":"%s","created_at":"2026-01-01T00:00:00","count":2,'
-        '"bytes":24,"moves":[{"from":"a.jpg","to":"_kurator_quarantine/a.jpg"},'
-        '{"from":"b.jpg","to":"_kurator_quarantine/b.jpg"}]}' % tmp_path,
+        json.dumps(
+            {
+                "kind": "by-hand",
+                "root": str(tmp_path),
+                "created_at": "2026-01-01T00:00:00",
+                "count": 2,
+                "bytes": 24,
+                "moves": [
+                    {"from": "a.jpg", "to": f"{LEGACY_QUARANTINE_DIRNAME}/a.jpg"},
+                    {"from": "b.jpg", "to": f"{LEGACY_QUARANTINE_DIRNAME}/b.jpg"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     store.start_run("by-hand", manifest)
@@ -604,9 +627,17 @@ def test_prune_drops_manifests_without_any_file(tmp_path):
     # карантина: старый `_kurator_quarantine` был бы уже не про эту
     # функцию, а про миграцию, которая проверяется отдельно.
     stale.write_text(
-        '{"kind":"by-hand","root":"%s","created_at":"2026-01-01T00:00:00",'
-        '"count":1,"bytes":0,"moves":[{"from":"ghost.txt",'
-        '"to":"%s/ghost.txt"}]}' % (tmp_path, QUARANTINE_DIRNAME),
+        json.dumps(
+            {
+                "kind": "by-hand",
+                "root": str(tmp_path),
+                "created_at": "2026-01-01T00:00:00",
+                "count": 1,
+                "bytes": 0,
+                "moves": [{"from": "ghost.txt", "to": f"{QUARANTINE_DIRNAME}/ghost.txt"}],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -625,7 +656,10 @@ def test_prune_drops_empty_manifests(tmp_path):
     store = make_store(tmp_path)
     apply_moves(store, plan_moves(tmp_path, ["b.txt"]), kind="by-hand", dry_run=False)
     empty = quarantine_root(tmp_path) / "manifest_by-hand_empty.json"
-    empty.write_text('{"kind":"by-hand","root":"%s","moves":[]}' % tmp_path, encoding="utf-8")
+    empty.write_text(
+        json.dumps({"kind": "by-hand", "root": str(tmp_path), "moves": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     prune_stale_manifests(store)
 
@@ -652,8 +686,14 @@ def test_delete_trash_also_cleans_history_of_dead_runs(tmp_path):
     # манифест от несуществующего переноса, как остаётся после старых багов
     ghost = quarantine_root(tmp_path) / "manifest_by-hand_ghost.json"
     ghost.write_text(
-        '{"kind":"by-hand","root":"%s","moves":[{"from":"z.jpg",'
-        '"to":".kurator/quarantine/z.jpg"}]}' % tmp_path,
+        json.dumps(
+            {
+                "kind": "by-hand",
+                "root": str(tmp_path),
+                "moves": [{"from": "z.jpg", "to": f"{QUARANTINE_DIRNAME}/z.jpg"}],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
