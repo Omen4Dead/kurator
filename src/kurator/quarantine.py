@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import json
 import secrets
 import shutil
@@ -11,8 +12,57 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME
+from .config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME, rel_posix
 from .db import Store
+
+
+def _move_file(src: Path, dst: Path) -> None:
+    """Перенести файл, пережив разные тома.
+
+    `shutil.move` сам этого не делает: если источник и цель на разных
+    томах, он бросает `OSError` с `EXDEV`. Обычно карантин лежит внутри
+    корня и том один, но вложенная точка монтирования или NTFS-junction
+    это ломает — причём в самом неприятном месте, на откате.
+
+    Поэтому при `EXDEV` перенос идёт как копирование с последующим
+    удалением. Порядок важен: если копирование оборвалось, оригинал
+    остаётся на месте и файл не теряется.
+    """
+    try:
+        shutil.move(str(src), str(dst))
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.copy2(str(src), str(dst))
+        try:
+            src.unlink()
+        except OSError:
+            # Копия уже на месте, а оригинал не смогли снести: файл
+            # существует в двух местах, что заметно лучше, чем нигде.
+            pass
+
+
+def _load_manifest(manifest: Path) -> dict | None:
+    """Прочитать манифест переноса, приведя разделители к прямым.
+
+    Манифест, написанный на Windows, хранит пути с обратными слэшами.
+    Читать его надо, а такие архивы у пользователей уже есть, поэтому
+    нормализация идёт при чтении, а не рассчитывает на то, что старых
+    файлов не встретится.
+    """
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    for entry in payload.get("moves", []):
+        if isinstance(entry, dict):
+            for field in ("from", "to"):
+                value = entry.get(field)
+                if isinstance(value, str):
+                    entry[field] = value.replace("\\", "/")
+    return payload
 
 
 @dataclass
@@ -22,8 +72,8 @@ class Move:
 
     def as_dict(self, root: Path) -> dict:
         return {
-            "from": str(self.src.relative_to(root)),
-            "to": str(self.dst.relative_to(root)),
+            "from": rel_posix(self.src, root),
+            "to": rel_posix(self.dst, root),
         }
 
 
@@ -60,7 +110,7 @@ def migrate_legacy_quarantine(root: Path) -> dict:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.move(str(path), str(target))
+            _move_file(path, target)
         except OSError:
             continue
         if path.suffix == ".json":
@@ -73,9 +123,8 @@ def migrate_legacy_quarantine(root: Path) -> dict:
     prefix_old = f"{LEGACY_QUARANTINE_DIRNAME}/"
     prefix_new = f"{QUARANTINE_DIRNAME}/"
     for manifest in base.glob("*.json"):
-        try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = _load_manifest(manifest)
+        if payload is None:
             continue
         changed = False
         for move in payload.get("moves", []):
@@ -129,11 +178,11 @@ def apply_moves(store: Store, moves: list[Move], kind: str, dry_run: bool) -> di
             "bytes": planned_bytes,
             "manifest": None,
             "run_id": None,
-            "paths": [str(m.src.relative_to(root)) for m in moves],
+            "paths": [rel_posix(m.src, root) for m in moves],
             "sample": [
                 {
-                    "from": str(m.src.relative_to(root)),
-                    "to": str(m.dst.relative_to(root)),
+                    "from": rel_posix(m.src, root),
+                    "to": rel_posix(m.dst, root),
                 }
                 for m in moves
             ],
@@ -157,7 +206,7 @@ def apply_moves(store: Store, moves: list[Move], kind: str, dry_run: bool) -> di
     for move in moves:
         move.dst.parent.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.move(str(move.src), str(move.dst))
+            _move_file(move.src, move.dst)
             done.append(move.as_dict(root))
         except OSError as exc:
             failed.append({**move.as_dict(root), "error": str(exc)})
@@ -208,9 +257,8 @@ def list_runs(store: Store, limit: int = 20) -> list[dict]:
     out: list[dict] = []
     for row in store.query("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)):
         manifest = Path(row["manifest"])
-        try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = _load_manifest(manifest)
+        if payload is None:
             continue
         root = Path(payload.get("root", ""))
         moves = payload.get("moves", [])
@@ -279,7 +327,9 @@ def _restore(store: Store, row: sqlite3.Row) -> dict:
     manifest = _resolve_manifest(store, row)
     if not manifest.is_file():
         return {"moved": 0, "message": f"манифест потерян: {manifest}"}
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload = _load_manifest(manifest)
+    if payload is None:
+        return {"moved": 0, "message": f"манифест не читается: {manifest}"}
     root = store.root
     restored: list[str] = []
     missing: list[str] = []
@@ -293,7 +343,7 @@ def _restore(store: Store, row: sqlite3.Row) -> dict:
         if dst.exists():
             missing.append(entry["to"])
             continue
-        shutil.move(str(src), str(dst))
+        _move_file(src, dst)
         restored.append(entry["from"])
 
     base = quarantine_root(root)
@@ -323,11 +373,11 @@ def list_trash(store: Store) -> list[dict]:
     rows = store.query("SELECT id, manifest FROM runs ORDER BY id DESC")
     for row in rows:
         manifest = Path(row["manifest"])
-        try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = _load_manifest(manifest)
+        if payload is None:
             continue
         for entry in payload.get("moves", []):
+            # Разделители уже прямые: нормализует _load_manifest.
             rel_to = entry.get("to", "")
             path = root / rel_to
             claimed.add(rel_to)
@@ -390,9 +440,8 @@ def prune_stale_manifests(store: Store) -> dict:
     dropped: set[int] = set()
 
     for manifest in sorted(base.glob("*.json")):
-        try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = _load_manifest(manifest)
+        if payload is None:
             continue
         moves = payload.get("moves", [])
         alive = [m for m in moves if (root / m.get("to", "")).is_file()]
@@ -464,9 +513,8 @@ def delete_trash(store: Store, keys: list[str]) -> dict:
     gone = set(deleted)
     for row in store.query("SELECT id, manifest FROM runs"):
         manifest = Path(row["manifest"])
-        try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = _load_manifest(manifest)
+        if payload is None:
             continue
         moves = payload.get("moves", [])
         left = [m for m in moves if m.get("to") not in gone]

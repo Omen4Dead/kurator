@@ -135,6 +135,36 @@ def test_quit_stops_serve_forever_and_releases_the_thread(tmp_path):
     second.join(timeout=5)
 
 
+def test_server_starts_without_reverse_dns_lookup(tmp_path, monkeypatch):
+    """Сервер должен подниматься, даже если резолвер отвечает вечно.
+
+    `http.server.HTTPServer.server_bind()` делает `socket.getfqdn(host)` —
+    обратный DNS-запрос. На macOS-раннере GitHub он не возвращался за десять
+    секунд: сокет слушал, но не отвечал, и kurator выглядел зависшим без
+    единого слова об ошибке. Локальному интерфейсу имя хоста не нужно.
+
+    Здесь `getfqdn` подменён на намеренно зависающий, поэтому старый код
+    упал бы на таймауте, а текущий — нет.
+    """
+    import socket as socket_module
+
+    def hanging_getfqdn(_host):
+        # Сон длиннее любого разумного таймаута: если сервер полезет сюда,
+        # тест упадёт по часам, а не случайно пройдёт на быстрой машине.
+        time.sleep(30)
+        return "unreachable"
+
+    monkeypatch.setattr(socket_module, "getfqdn", hanging_getfqdn)
+
+    thread, finished, port = _start(tmp_path, "album-nodns")
+
+    assert urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).status == 200
+
+    _post(port, _token(port), "/api/quit")
+    assert finished.wait(10)
+    thread.join(timeout=5)
+
+
 def test_quit_refuses_a_foreign_token(tmp_path):
     """Чужой токен не должен гасить сервер: иначе любой, кто знает адрес,
     мог бы остановить разбор чужой папки одной ссылкой."""

@@ -89,5 +89,27 @@ def default_model_path() -> Path:
     return PROJECT_ROOT / "models" / MODEL_FILENAME
 
 
+def rel_posix(path: Path, root: Path) -> str:
+    """Путь относительно корня всегда через «/».
+
+    Индекс, манифесты и веб-интерфейс сравнивают и режут пути через
+    `split("/")`. `str(path.relative_to(root))` на Windows даёт обратные
+    слэши, и дальше это расходится: `list_trash` читает из манифеста
+    `.kurator\\quarantine\\a.jpg`, а при обходе диска получает
+    `.kurator/quarantine/a.jpg`. Один файл — два разных ключа, он
+    показывается в корзине дважды, а удаление сбрасывает только один.
+
+    Поэтому любой относительный путь, который попадает в индекс, манифест
+    или ответ API, проходит здесь. Обратно разворачивается через
+    `Path(*rel.split("/"))`.
+    """
+    return path.relative_to(root).as_posix()
+
+
+def unflatten(rel: str) -> Path:
+    """Развернуть путь из индекса обратно в `Path` текущей системы."""
+    return Path(*rel.split("/"))
+
+
 def is_image(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTENSIONS

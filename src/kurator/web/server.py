@@ -10,6 +10,8 @@ from __future__ import annotations
 import io
 import json
 import mimetypes
+import os
+import re
 import sqlite3
 import secrets
 import threading
@@ -17,6 +19,7 @@ import time
 import webbrowser
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, unquote, urlparse
@@ -79,10 +82,22 @@ BLOCKED_ROOTS = {
     "/sbin", "/System", "/sys", "/usr", "/var",
 }
 
+# На Windows корни томов — `C:\`, `D:\` и так далее. Их тут быть не может:
+# список задан строками, и буквы дисков заранее неизвестны. Ловим на лету.
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]?$")
+
 
 def too_broad(path: Path) -> bool:
     """Корень, где kurator бессмысленно полезет по всей системе."""
-    if str(path) in BLOCKED_ROOTS:
+    raw = str(path)
+    if raw in BLOCKED_ROOTS:
+        return True
+    if _WINDOWS_DRIVE_RE.match(raw):
+        return True
+    # Хвост после разделителя тоже должен быть помечен: в Windows путь,
+    # разрешённый системой, выглядит как `C:\`, но на Python с forward
+    # slashes — как `C:/`, а обе формы означают один и тот же корень.
+    if os.name == "nt" and _WINDOWS_DRIVE_RE.match(raw.rstrip("/\\")):
         return True
     return not any(path.iterdir()) if path.is_dir() else False
 
@@ -161,6 +176,29 @@ def candidate_roots() -> list[dict]:
             pass
 
     return out
+
+
+class _Server(ThreadingHTTPServer):
+    """Сервер без обратного DNS-поиска.
+
+    `http.server.HTTPServer.server_bind()` зовёт `socket.getfqdn(host)`,
+    чтобы записать `server_name`. Это обратный DNS-запрос, и на машине с
+    медленным резолвером он висит секундами: сокет уже слушает, но
+    `serve_forever()` ещё не вызван, поэтому приложение выглядит зависшим,
+    а в терминале нет ни слова об ошибке.
+
+    Локальному интерфейсу имя хоста не нужно: он слушает только
+    `127.0.0.1`, и никто не обращается к нему по имени. Поэтому
+    `server_bind` берём из `TCPServer` — без поиска.
+    """
+
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
 
 
 class State:
@@ -756,8 +794,7 @@ def serve(root: Path | None, host: str = "127.0.0.1", port: int = 8765, open_bro
     remember_root(state.root)
 
     handler = type("BoundHandler", (Handler,), {"state": state})
-    httpd = ThreadingHTTPServer((host, port), handler)
-    httpd.daemon_threads = True
+    httpd = _Server((host, port), handler)
     state.stop_server = httpd.shutdown
 
     url = f"http://{host}:{port}/?token={state.token}"

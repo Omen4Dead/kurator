@@ -1,6 +1,6 @@
 import datetime as dt
 import shutil
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from kurator.db import Store
 from kurator.quarantine import apply_moves, plan_moves, quarantine_root, undo_last_run
@@ -219,6 +219,13 @@ def test_blocked_roots_are_rejected():
     assert too_broad(Path("/")) is True
     assert too_broad(Path("/System")) is True
 
+    # Корни томов Windows: буквы дисков заранее не перечислишь, ловим на
+    # лету. Без этого указал бы kurator на `C:\` — и он пошёл бы обходить
+    # всю систему. `PureWindowsPath` разбирается как Windows на любой
+    # системе, поэтому проверка работает и на macOS.
+    assert too_broad(PureWindowsPath("C:\\")) is True
+    assert too_broad(PureWindowsPath("d:/")) is True
+
 
 def test_dry_run_writes_nothing(tmp_path):
     """Пробный прогон не должен оставлять следов в папке карантина."""
@@ -340,6 +347,51 @@ def test_list_trash_shows_quarantined_files_with_origin(tmp_path):
     assert {i["from_path"] for i in items} == {"a.jpg", "b.jpg"}
     assert all(i["to_path"].startswith(".kurator/quarantine/") for i in items)
     assert all(i["size"] > 0 and i["orphan"] is False for i in items)
+    store.close()
+
+
+def test_manifest_written_with_backslashes_is_read_as_posix(tmp_path):
+    """Манифест, написанный на Windows, должен читаться как будто там «/».
+
+    Регрессия, найденная CI на Windows. `list_trash` брала ключ из манифеста
+    как есть, а при обходе диска — через `as_posix()`. На Windows это
+    `.kurator\\quarantine\\a.jpg` и `.kurator/quarantine/a.jpg`: один и тот
+    же файл получал два ключа, не попадал в `claimed` и показывался в
+    корзине дважды. Из того же расхождения ломалось удаление: сбрасывался
+    один ключ, второй оставался, и файл не уходил.
+
+    Тест пишет манифест руками, обратными слэшами — ровно так, как его
+    пишет Windows.
+    """
+    import json
+
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, list_trash, plan_moves
+
+    store = Store.open(tmp_path)
+    for name in ("a.jpg", "b.jpg"):
+        p = tmp_path / name
+        p.write_bytes(name.encode() * 10)
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+
+    apply_moves(store, plan_moves(tmp_path, ["a.jpg", "b.jpg"]), kind="by-hand", dry_run=False)
+
+    # Переписываем манифест в том виде, в котором его оставила бы Windows.
+    manifest = next(quarantine_root(tmp_path).glob("*.json"))
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    for move in payload["moves"]:
+        for field in ("from", "to"):
+            move[field] = move[field].replace("/", "\\")
+    manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    items = list_trash(store)
+
+    assert len(items) == 2, f"файлы задвоились: {[i['key'] for i in items]}"
+    assert all("\\" not in i["key"] for i in items), "в ключе остались обратные слэши"
+    assert {i["from_path"] for i in items} == {"a.jpg", "b.jpg"}
+    assert all(i["orphan"] is False for i in items), "файл потерял манифест"
     store.close()
 
 
@@ -630,3 +682,34 @@ def test_prune_counts_rows_once(tmp_path):
     assert result["manifests"] == 0, "живой манифест не трогаем"
     assert result["rows"] == 0, "живую запись не вычищаем"
     store.close()
+
+
+def test_move_across_volumes_copies_instead_of_failing(tmp_path, monkeypatch):
+    """Перенос между томами должен копировать, а не падать.
+
+    `shutil.move` бросает `OSError` с `EXDEV`, если источник и цель на
+    разных томах. Карантин лежит внутри корня, так что обычно том один, но
+    вложенная точка монтирования или NTFS-junction это ломает — причём на
+    откате, то есть ровно тогда, когда человек ждёт возврата файлов.
+
+    Подменяем `shutil.move` на тот, что всегда падает с `EXDEV`, и проверяем,
+    что файл всё-таки переехал, а оригинал убран.
+    """
+    import errno as errno_module
+
+    from kurator.quarantine import _move_file
+
+    src = tmp_path / "src.txt"
+    src.write_text("данные", encoding="utf-8")
+    dst = tmp_path / "sub" / "dst.txt"
+    dst.parent.mkdir()
+
+    def always_exdev(_src, _dst):
+        raise OSError(errno_module.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(shutil, "move", always_exdev)
+
+    _move_file(src, dst)
+
+    assert dst.read_text(encoding="utf-8") == "данные", "файл не переехал"
+    assert not src.exists(), "оригинал остался на месте"
