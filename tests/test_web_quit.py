@@ -60,14 +60,30 @@ def _start(tmp_path: Path, name: str) -> tuple[threading.Thread, threading.Event
     root.mkdir()
     port = _free_port()
     finished = threading.Event()
+    # Исключение из потока обслуживания иначе пропадает: поток демон, его
+    # трейсборк никто не печатает, и падение выглядит как «сервер не
+    # поднялся» без единого слова о причине. Именно так выглядела поломка
+    # на macOS-раннере до того, как её начали ловить здесь.
+    crashed: list[BaseException] = []
 
     def run() -> None:
-        serve(root, port=port, open_browser=False)
-        finished.set()
+        try:
+            serve(root, port=port, open_browser=False)
+        except BaseException as exc:  # noqa: BLE001 — причина нужна в тесте
+            crashed.append(exc)
+        finally:
+            finished.set()
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    _wait_for(port)
+    try:
+        _wait_for(port)
+    except AssertionError:
+        if crashed:
+            raise AssertionError(
+                f"сервер упал при поднятии: {crashed[0]!r}"
+            ) from crashed[0]
+        raise
     return thread, finished, port
 
 
