@@ -27,13 +27,18 @@ def _free_port() -> int:
 
 def _wait_for(port: int, timeout: float = 10.0) -> None:
     deadline = time.time() + timeout
+    last: BaseException | None = None
     while time.time() < deadline:
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1)
             return
-        except Exception:
+        except Exception as exc:
+            # Причина не отвечающего сервера — единственное, что здесь
+            # полезно знать. «Сервер не поднялся» само по себе не говорит
+            # ни отказал ли порт, ни запрещён ли соединение, ни жив ли он.
+            last = exc
             time.sleep(0.05)
-    raise AssertionError("сервер не поднялся")
+    raise AssertionError(f"сервер не поднялся: {last!r}")
 
 
 def _token(port: int) -> str:
