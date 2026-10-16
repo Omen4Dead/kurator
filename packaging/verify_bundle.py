@@ -82,7 +82,24 @@ def get(path: str) -> str:
     return urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}", timeout=30).read().decode()
 
 
+def _utf8_stdout() -> None:
+    """Научить консоль печатать по-русски.
+
+    На Windows stdout по умолчанию cp1252, и русский текст в нём не
+    представим: скрипт падал с UnicodeEncodeError на первой же строке
+    вывода. Проверка собра��ного приложения на Windows не прошла бы
+    именно из-за этого — то есть проверяла бы не то.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> None:
+    _utf8_stdout()
+
     if len(sys.argv) < 2:
         fail("укажи каталог собранного приложения: verify_bundle.py dist/kurator")
     bundle = Path(sys.argv[1])

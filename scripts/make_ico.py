@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -72,6 +73,21 @@ def pixels(data: bytes) -> dict[tuple[int, int], bytes]:
     return out
 
 
+def _utf8_stdout() -> None:
+    """Научить консоль печатать по-русски.
+
+    На Windows stdout по умолчанию cp1252, и русский текст в нём не
+    представим: скрипт падал с UnicodeEncodeError на первой же строке
+    вывода. Это не косметика — на Windows падало всё, что печатает
+    сообщения, включая проверку собранного приложения.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -80,6 +96,7 @@ def main() -> None:
         help="только проверить, что закоммиченная иконка свежая",
     )
     args = parser.parse_args()
+    _utf8_stdout()
 
     fresh = build()
 

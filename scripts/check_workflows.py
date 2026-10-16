@@ -20,7 +20,19 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 
 
+def _utf8_stdout() -> None:
+    """Научить консоль печатать по-русски: на Windows stdout по умолчанию
+    cp1252, и русский текст в нём не представим — скрипт падал бы на
+    первой же строке вывода."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> int:
+    _utf8_stdout()
     try:
         import yaml
     except ImportError:
