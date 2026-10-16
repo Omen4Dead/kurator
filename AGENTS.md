@@ -87,6 +87,11 @@ uv run kurator index /tmp/kurator-test
 uv run kurator evaluate /tmp/kurator-test --sweep
 ```
 
+Те же команды гоняет CI на каждом пуше: быстрый `pytest` без весов на трёх
+системах и сквозной прогон с моделью на Linux, см. `.github/workflows/ci.yml`.
+Локально повторить его целиком можно ровно этими строками — на macOS они дают
+тот же результат, что и джоб.
+
 ## Правила работы
 
 **Единая точка входа для подсчёта кандидатов — `dedupe.analyze()`.**

@@ -11,10 +11,21 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST_DIR="${1:-$ROOT/models}"
 DEST="$DEST_DIR/vision_model_int8.onnx"
 
+# sha256sum живёт на Linux, shasum — на macOS. Скриптом пользуется и CI
+# на ubuntu, где shasum может не быть: без этой проверки несовпадение
+# хеша молча проходило бы как «уже на месте».
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 mkdir -p "$DEST_DIR"
 
 if [[ -f "$DEST" ]]; then
-  have="$(shasum -a 256 "$DEST" | awk '{print $1}')"
+  have="$(sha256_of "$DEST")"
   if [[ "$have" == "$MODEL_SHA256" ]]; then
     echo "уже на месте: $DEST"
     exit 0
@@ -29,7 +40,7 @@ curl -fL --progress-bar \
   -o "$DEST"
 
 echo "проверяю sha256"
-have="$(shasum -a 256 "$DEST" | awk '{print $1}')"
+have="$(sha256_of "$DEST")"
 if [[ "$have" != "$MODEL_SHA256" ]]; then
   echo "SHA-256 не совпал" >&2
   echo "  ожидал: $MODEL_SHA256" >&2

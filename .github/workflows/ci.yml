@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Быстрый прогон на трёх системах без весов. Четыре теста, которым нужна
+  # модель, честно пропускаются, остальные идут за три секунды — именно
+  # поэтому джоб дешёвый и гоняется на каждый пуш.
+  #
+  # Пока этого джоба не было, `sips` не всплывал с октября: на macOS он
+  # есть всегда и падать нечему, а проверить было негде. Теперь молчаливые
+  # поломки видны сразу — на Linux падает подстановка sips, на Windows
+  # разъезжаются пути с обратными слэшами.
+  fast:
+    name: pytest · ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.13"]
+        include:
+          # Минимальная поддерживаемая версия — на самой дешёвой системе.
+          - os: ubuntu-latest
+            python: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: pytest без весов
+        env:
+          # Путь, которого нет: тесты с моделью должны пропуститься, а не
+          # скачать 90 МБ в каждом джобе. Относительный — одинаково
+          # неправильный на всех трёх системах.
+          KURATOR_MODEL: no-such-model/vision_model_int8.onnx
+        run: uv run pytest -q
+
+  # Сквозной прогон с моделью на Linux. Здесь сходятся дедупликация,
+  # эмбеддинги и карантин вместе — то, чего быстрый джоб не проверяет.
+  end-to-end:
+    name: сквозной прогон с моделью
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Кэш весов
+        uses: actions/cache@v4
+        with:
+          path: models
+          # Ключ — первые биты sha256 из scripts/pull-model.sh. Смена весов
+          # пересобирает кэш сам, а не по дате коммита.
+          key: siglip2-int8-0dd31785
+
+      - name: Скачать веса
+        # Скрипт вызывается всегда, даже при попадании в кэш: у него есть
+        # своя проверка sha256, и битый кэш должен падать здесь, а не
+        # молча давать неверные эмбеддинги.
+        run: ./scripts/pull-model.sh
+
+      - name: pytest с весами
+        run: uv run pytest -q
+
+      - name: Собрать тестовый архив
+        run: uv run python scripts/make_testset.py "$RUNNER_TEMP/kurator-test" 180
+
+      - name: Проиндексировать
+        run: uv run kurator index "$RUNNER_TEMP/kurator-test"
+
+      - name: Точность против эталона
+        run: uv run kurator evaluate "$RUNNER_TEMP/kurator-test" --sweep
