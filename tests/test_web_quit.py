@@ -38,6 +38,12 @@ def _wait_for(port: int, timeout: float = 10.0) -> None:
             # ни отказал ли порт, ни запрещён ли соединение, ни жив ли он.
             last = exc
             time.sleep(0.05)
+    # Сокет слушает, но не отвечает — accept() не вызывается, и виновата
+    # строка где-то между созданием сервера и serve_forever(). Стек всех
+    # потоков показывает её точно; угадывать по симптому бессмысленно.
+    import faulthandler
+
+    faulthandler.dump_traceback()
     raise AssertionError(f"сервер не поднялся: {last!r}")
 
 
