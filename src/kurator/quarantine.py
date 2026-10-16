@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME, rel_posix
+from .config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME, rel_posix, unflatten
 from .db import Store
 
 
@@ -490,13 +490,18 @@ def delete_trash(store: Store, keys: list[str]) -> dict:
     freed = 0
 
     for key in sorted(wanted):
-        path = root / key
+        path = root / unflatten(key)
         try:
             resolved = path.resolve()
         except OSError:
             failed.append({"key": key, "error": "путь не читается"})
             continue
-        if base.resolve() not in resolved.parents:
+        # Сравнение через parents, а не через строки: на Windows пути
+        # разъезжаются по регистру и по разделителю, и проверка «файл
+        # внутри карантина» молча становилась ложной. `os.path.commonpath`
+        # не годится — он бросает исключение на разных томах.
+        base_resolved = base.resolve()
+        if resolved != base_resolved and base_resolved not in resolved.parents:
             failed.append({"key": key, "error": "это не карантин, отказ"})
             continue
         if not path.is_file():

@@ -2,6 +2,7 @@ import datetime as dt
 import shutil
 from pathlib import Path, PureWindowsPath
 
+from kurator.config import QUARANTINE_DIRNAME
 from kurator.db import Store
 from kurator.quarantine import apply_moves, plan_moves, quarantine_root, undo_last_run
 
@@ -599,10 +600,13 @@ def test_prune_drops_manifests_without_any_file(tmp_path):
     store = make_store(tmp_path)
     apply_moves(store, plan_moves(tmp_path, ["b.txt"]), kind="by-hand", dry_run=False)
     stale = quarantine_root(tmp_path) / "manifest_by-hand_ghost.json"
+    # Путь внутри манифеста — относительно корня и уже в новой папке
+    # карантина: старый `_kurator_quarantine` был бы уже не про эту
+    # функцию, а про миграцию, которая проверяется отдельно.
     stale.write_text(
         '{"kind":"by-hand","root":"%s","created_at":"2026-01-01T00:00:00",'
         '"count":1,"bytes":0,"moves":[{"from":"ghost.txt",'
-        '"to":"_kurator_quarantine/ghost.txt"}]}' % tmp_path,
+        '"to":"%s/ghost.txt"}]}' % (tmp_path, QUARANTINE_DIRNAME),
         encoding="utf-8",
     )
 
