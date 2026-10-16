@@ -82,8 +82,19 @@ uv run kurator models      # проверить, что модель на мес
 ### Собрать установщик
 
 ```bash
-./packaging/build.sh       # dist/kurator.app и dist/kurator.dmg
+./packaging/build.sh       # macOS: dist/kurator.app и dist/kurator.dmg
 ```
+
+На Windows то же самое, и для этого есть PowerShell-скрипт:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build-windows.ps1
+```
+
+PyInstaller не умеет кросс-компиляцию, поэтому Windows-сборку можно сделать
+только на Windows. Обычно это и не требуется: установщик `kurator.exe`
+собирается в CI при мёрже в `main` и лежит в
+[релизах](https://github.com/Omen4Dead/kurator/releases/latest).
 
 Под macOS проверено полностью, есть установщик. Linux и Windows работают
 из исходников; установщика для них пока нет, и на Windows приложение

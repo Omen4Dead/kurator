@@ -23,6 +23,16 @@ if [ "$(uname -m)" != "arm64" ]; then
   echo "предупреждение: собрано под $(uname -m), приложение рассчитано на Apple Silicon" >&2
 fi
 
+echo "==> веса модели"
+# Как и в build-windows.ps1: одна команда должна работать из свежего
+# клона. Сеть по-прежнему только здесь — внутри pull-model.sh, и больше
+# нигде в сборке.
+if [ ! -f "models/vision_model_int8.onnx" ]; then
+    ./scripts/pull-model.sh
+else
+    echo "  уже на месте"
+fi
+
 echo "==> сборка $APP"
 rm -rf "$APP" "$DIST/build"
 uv run --group dev pyinstaller \
@@ -40,6 +50,24 @@ codesign --force --sign - --deep "$APP"
 
 echo "==> проверка подписи"
 codesign --verify --deep --strict "$APP" && echo "подпись в порядке"
+
+# Проверяем собранное приложение, а не только факт сборки. Сборка, которая
+# создалась, но не открывает страницу или не считает эмбеддинги, считалась
+# бы успехом: так ловились забытые веб-ассеты и неполный бандл
+# onnxruntime, и обе ошибки выглядели как «приложение собралось».
+echo "==> проверка собранного приложения"
+uv run python packaging/verify_bundle.py "$APP"
+
+# Сборка приложения уже закончена, а установщик собирать необязательно.
+# Так CI проверяет бандл на каждом пуче, где тронута сборка, не тратя
+# ещё и время на упаковку образа.
+if [ "${KURATOR_NO_INSTALLER:-0}" = "1" ]; then
+    echo
+    echo "==> установщик пропущен (KURATOR_NO_INSTALLER=1)"
+    du -sh "$APP" | sed 's/^/  приложение  /'
+    echo "  путь: $APP"
+    exit 0
+fi
 
 echo "==> установщик $DMG"
 rm -f "$DMG"
