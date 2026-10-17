@@ -67,15 +67,27 @@ def make_archive(root: Path) -> Path:
 
 def wait_for_server(process: subprocess.Popen) -> None:
     deadline = time.time() + 120
+    last: object = None
     while time.time() < deadline:
         if process.poll() is not None:
-            fail(f"приложение завершилось с кодом {process.returncode} до поднятия сервера")
+            fail(
+                f"приложение завершилось с кодом {process.returncode} "
+                "до поднятия сервера" + _error_report()
+            )
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=2)
             return
-        except Exception:
+        except urllib.error.HTTPError as exc:
+            # Сервер ответил — значит сокет слушает и процесс жив. Что он
+            # отдал, скажет проверка содержимого. Раньше такой ответ
+            # считался «сервер не поднялся», и настоящая причина пряталась
+            # за выдуманной.
+            last = f"HTTP {exc.code}"
+            return
+        except Exception as exc:
+            last = exc
             time.sleep(0.4)
-    fail("сервер не поднялся за 120 секунд" + _error_report())
+    fail(f"сервер не поднялся за 120 секунд, последняя причина: {last!r}" + _error_report())
 
 
 def _error_report() -> str:
