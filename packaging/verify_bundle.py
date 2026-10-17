@@ -37,6 +37,12 @@ from pathlib import Path
 PORT = 8765
 TIMEOUT = 300.0
 
+# Сколько ждать поднятия сервера. На Windows первый запуск собранного
+# приложения занимает минуты: защитник проверяет двести мегабайт бандла, и
+# каждое открытие файла ждёт очереди. 120 секунд на это не хватало, и
+# проверка объявляла провалом то, что было медленным, а не сломанным.
+STARTUP_BUDGET = 900.0
+
 
 def fail(message: str) -> None:
     print(f"ПРОВАЛ: {message}", file=sys.stderr)
@@ -66,8 +72,18 @@ def make_archive(root: Path) -> Path:
 
 
 def wait_for_server(process: subprocess.Popen) -> None:
-    deadline = time.time() + 120
+    """Дождаться сервера, печатая ход ожидания.
+
+    Бюджет в 120 секунд оказался мал: на Windows сборка стартует минуты,
+    и это не поломка. На CI это выглядело так, будто приложение зависло
+    намертво, — а на деле оно ещё разворачивало и сканировалось
+    защитником. Поэтому ждём дольше и каждые полминуты говорим, где
+    процесс находится: без этого «долго» и «зависло» неразличимы.
+    """
+    started = time.time()
+    deadline = started + STARTUP_BUDGET
     last: object = None
+    next_report = started + 30
     while time.time() < deadline:
         if process.poll() is not None:
             fail(
@@ -76,6 +92,8 @@ def wait_for_server(process: subprocess.Popen) -> None:
             )
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=2)
+            if time.time() - started > 20:
+                print(f"  сервер поднялся за {time.time() - started:.0f} с")
             return
         except urllib.error.HTTPError as exc:
             # Сервер ответил — значит сокет слушает и процесс жив. Что он
@@ -86,11 +104,23 @@ def wait_for_server(process: subprocess.Popen) -> None:
             return
         except Exception as exc:
             last = exc
+            if time.time() >= next_report:
+                next_report = time.time() + 30
+                print(
+                    f"  жду уже {time.time() - started:.0f} с, "
+                    f"процесс жив: {process.poll() is None}, "
+                    f"{_instance_note()}, последняя причина: {exc!r}"
+                )
             time.sleep(0.4)
     fail(
-        "сервер не поднялся за 120 секунд, последняя причина: "
-        f"{last!r}\n\n{diagnostics(process)}" + _error_report()
+        f"сервер не поднялся за {STARTUP_BUDGET:.0f} секунд, "
+        f"последняя причина: {last!r}\n\n{diagnostics(process)}" + _error_report()
     )
+
+
+def _instance_note() -> str:
+    path = Path.home() / ".kurator" / "instance.json"
+    return "экземпляр записан" if path.is_file() else "до сокета не дошёл"
 
 
 def diagnostics(process: subprocess.Popen) -> str:
