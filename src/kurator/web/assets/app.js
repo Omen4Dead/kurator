@@ -584,6 +584,31 @@ $("btn-undo").onclick = async () => {
   }
 };
 
+/* ---- Вкладка: сказать серверу, что мы тут ----
+ *
+ * Сервер держит модель и индекс в памяти и по простою выключается.
+ * Он может это делать, только если знает, что вкладка открыта: без
+ * счётчика он гас бы под работающей страницей. Приход при загрузке,
+ * уход — на `pagehide`, потому что `beforeunload` браузеры блокируют, а
+ * `sendBeacon` доживает до сервера при закрытии вкладки.
+ */
+function announceOpen() {
+  api("/api/hello", { method: "POST", body: "{}" }).catch(() => {});
+}
+
+function announceClose() {
+  // Токен в заголовке, но sendBeacon не даёт его задать. Поэтому адрес
+  // с токеном в строке — единственный способ, который переживает
+  // закрытие страницы. Токен и так лежит в адресе открытой вкладки.
+  const url = new URL(window.location.href);
+  if (!navigator.sendBeacon) return;
+  navigator.sendBeacon(url.pathname.replace(/\/$/, "") + "/api/bye?token=" + encodeURIComponent(url.searchParams.get("token") || TOKEN));
+}
+
+window.addEventListener("pagehide", announceClose);
+window.addEventListener("pageshow", announceOpen);
+announceOpen();
+
 loadState()
   .then(() => Promise.all([loadFindings(), loadStrips(), refreshSituation(), loadTrashCount()]))
   .then(() => render())

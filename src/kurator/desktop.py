@@ -7,8 +7,14 @@
 
 from __future__ import annotations
 
-from .web.server import serve
+from .web.server import IDLE_SHUTDOWN_SECONDS, serve
 
 
 def main() -> None:
-    serve(root=None)
+    # Приложение выключается само, когда вкладок не осталось. Закрыл
+    # вкладку — значит закончил, и процесс с моделью и индексом в памяти
+    # не должен висеть до следующего щелчка по значку.
+    #
+    # В консоли такого нет: там `kurator ui` запускают руками и пользуются
+    # сервером без вкладки, поэтому режим ожидания там остаётся выключенным.
+    serve(root=None, idle_timeout=IDLE_SHUTDOWN_SECONDS)
