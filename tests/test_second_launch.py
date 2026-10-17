@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -31,6 +32,24 @@ from kurator.web.server import State, _Server, serve
 
 
 _PORT_SEQ = itertools.count(48100)
+
+# Поднятые серверы гасятся после каждого теста. Демон-поток pytest не
+# убьёт сам, и такой остаток на медленном раннере проявляется в
+# следующем тесте — на Windows это кончалось не красным прогоном, а
+# шестичасовым ожиданием.
+_STOPPERS: list[Callable[[], None]] = []
+
+
+@pytest.fixture(autouse=True)
+def stop_servers():
+    yield
+    while _STOPPERS:
+        try:
+            _STOPPERS.pop()()
+        except Exception:
+            # Что произошло при ошибке выхода, тест уже проверил сам.
+            # Здесь важно только не оставить процесс живым.
+            pass
 
 
 def _free_port() -> int:
@@ -95,18 +114,38 @@ def _start_serving(root: Path, port: int) -> tuple[threading.Thread, threading.E
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
+
+    def stopper() -> None:
+        if finished.is_set():
+            return
+        try:
+            _post(port, _token_of(port), "/api/quit")
+        except Exception:
+            pass
+        finished.wait(5)
+
+    _STOPPERS.append(stopper)
     return thread, finished
 
 
 def _wait(port: int, timeout: float = 15.0) -> None:
+    """Дождаться сервера и его следа.
+
+    Проверяется след, а не только ответ: след пишется сразу после
+    поднятия сокета, и по одному ответу тест мог счесть сервер
+    готовым раньше, чем появился файл. На медленном раннере это и дало
+    красный прогон на macOS.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1)
-            return
+            if srv.instance_path().is_file():
+                return
         except Exception:
-            time.sleep(0.05)
-    raise AssertionError("сервер не поднялся")
+            pass
+        time.sleep(0.05)
+    raise AssertionError("сервер не поднялся или не оставил след")
 
 
 def test_second_launch_opens_the_running_window(tmp_path, monkeypatch):
@@ -133,7 +172,6 @@ def test_second_launch_opens_the_running_window(tmp_path, monkeypatch):
     # И главное: первый экземпляр остался жив и отвечает.
     assert _token_of(port), "первый экземпляр не отвечает после второго запуска"
 
-    _post(port, _token_of(port), "/api/quit")
 
 
 def test_second_launch_does_not_raise_port_error(tmp_path, monkeypatch):
@@ -151,7 +189,6 @@ def test_second_launch_does_not_raise_port_error(tmp_path, monkeypatch):
     # Если бы защиты не было, здесь вылетел бы OSError.
     serve(None, port=port, open_browser=True)
 
-    _post(port, _token_of(port), "/api/quit")
 
 
 def test_only_one_server_survives(tmp_path, monkeypatch):
@@ -174,7 +211,6 @@ def test_only_one_server_survives(tmp_path, monkeypatch):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
         assert response.status == 200
 
-    _post(port, _token_of(port), "/api/quit")
 
 
 def test_explicit_folder_still_starts_its_own_server(tmp_path, monkeypatch):
@@ -197,7 +233,6 @@ def test_explicit_folder_still_starts_its_own_server(tmp_path, monkeypatch):
     assert finished.is_set() is False, "второй сервер со своей папкой сразу вышел"
 
     _post(other, _token_of(other), "/api/quit")
-    _post(port, _token_of(port), "/api/quit")
 
 
 def test_dead_instance_file_is_ignored(tmp_path, monkeypatch):
@@ -215,7 +250,6 @@ def test_dead_instance_file_is_ignored(tmp_path, monkeypatch):
     port = _free_port()
     thread, _ = _start_serving(tmp_path / "album", port)
     _wait(port)
-    _post(port, _token_of(port), "/api/quit")
 
 
 def test_foreign_server_on_port_is_not_mistaken_for_ours(tmp_path, monkeypatch):
@@ -250,15 +284,14 @@ def test_instance_trace_is_removed_on_shutdown(tmp_path, monkeypatch):
     port = _free_port()
     monkeypatch.setattr(srv.webbrowser, "open", lambda url: None)
 
-    _start_serving(tmp_path / "album", port)
+    _, finished = _start_serving(tmp_path / "album", port)
     _wait(port)
 
     assert srv.instance_path().is_file(), "следа нет, второй запуск не найдёт экземпляр"
 
+    # Гасим здесь, а не в фикстуре: проверяется след именно после
+    # остановки, а фикстура сработала бы уже после проверки.
     _post(port, _token_of(port), "/api/quit")
+    assert finished.wait(15), "сервер не остановился по запросу"
 
-    for _ in range(50):
-        if not srv.instance_path().is_file():
-            break
-        time.sleep(0.1)
     assert not srv.instance_path().is_file(), "след остался после остановки"

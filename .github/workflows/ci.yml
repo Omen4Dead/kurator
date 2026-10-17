@@ -25,6 +25,9 @@ jobs:
   # Поэтому воркфлои проверяются первыми и на самой дешёвой системе.
   workflows:
     name: воркфлои в порядке
+  # Без этого прогон может висеть шесть часов: GitHub по умолчанию
+  # держит лимит 360 минут, и один зависший тест съедает их молча.
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +52,7 @@ jobs:
   # разъезжаются пути с обратными слэшами.
   fast:
     name: pytest · ${{ matrix.os }} · py${{ matrix.python }}
+    timeout-minutes: 15
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -100,6 +104,9 @@ jobs:
   # эмбеддинги и карантин вместе — то, чего быстрый джоб не проверяет.
   end-to-end:
     name: сквозной прогон с моделью
+  # Без этого прогон может висеть шесть часов: GitHub по умолчанию
+  # держит лимит 360 минут, и один зависший тест съедает их молча.
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

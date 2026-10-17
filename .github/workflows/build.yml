@@ -50,6 +50,8 @@ env:
 jobs:
   macos:
     name: kurator.app (macOS)
+  # Сборка дольше тестов: веса, PyInstaller и Inno Setup.
+    timeout-minutes: 45
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +92,8 @@ jobs:
 
   windows:
     name: kurator.exe (Windows)
+  # Сборка дольше тестов: веса, PyInstaller и Inno Setup.
+    timeout-minutes: 45
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -134,6 +138,8 @@ jobs:
     name: Приложить к релизу
     needs: [macos, windows]
     if: startsWith(github.ref, 'refs/tags/v')
+  # Сборка дольше тестов: веса, PyInstaller и Inno Setup.
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     permissions:
       contents: write

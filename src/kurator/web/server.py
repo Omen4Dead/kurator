@@ -94,9 +94,25 @@ def write_instance(payload: dict) -> None:
         pass
 
 
-def clear_instance() -> None:
+def clear_instance(pid: int | None = None) -> None:
+    """Снять след, но только свой.
+
+    Без проверки pid след стирал любой, кто первым остановится: два
+    запущенных kurator — с разными папками — мешали бы друг другу, и
+    следующий щелчок по значку решил бы, что приложение уже работает, а
+    второго процесса нет. Заодно это делало тесты недетерминированными:
+    сервер из прошлого теста мог снести след текущего.
+    """
+    path = instance_path()
+    if pid is not None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict) or payload.get("pid") != pid:
+            return
     try:
-        instance_path().unlink()
+        path.unlink()
     except OSError:
         pass
 
@@ -998,7 +1014,7 @@ def serve(
     except KeyboardInterrupt:
         print("\nостанавливаюсь")
     finally:
-        clear_instance()
+        clear_instance(os.getpid())
         state.close()
         httpd.server_close()
         print("остановлено")
