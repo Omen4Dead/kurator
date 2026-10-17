@@ -75,7 +75,24 @@ def wait_for_server(process: subprocess.Popen) -> None:
             return
         except Exception:
             time.sleep(0.4)
-    fail("сервер не поднялся за 120 секунд")
+    fail("сервер не поднялся за 120 секунд" + _error_report())
+
+
+def _error_report() -> str:
+    """Показать след падения, если приложение его оставило.
+
+    Оконное приложение не пишет в stderr — `sys.stderr` у него равен
+    `None`, и исключение просто исчезает. Поэтому `desktop.py`
+    оставляет файл, и без его чтения падение выглядит как «сервер не
+    поднялся» без единого слова о причине.
+    """
+    path = Path.home() / ".kurator" / "last-error.log"
+    if not path.is_file():
+        return ""
+    try:
+        return "\n\nприложение оставило след:\n" + path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def get(path: str) -> str:
