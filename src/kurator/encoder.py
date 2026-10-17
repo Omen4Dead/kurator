@@ -4,16 +4,29 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Iterable
-
-import numpy as np
-import onnxruntime as ort
-from PIL import Image
+from typing import TYPE_CHECKING, Iterable
 
 from .config import BATCH_SIZE, MODEL_FILENAME, MODEL_SHA256, MODEL_URL
-from .imaging import to_siglip_batch
+
+if TYPE_CHECKING:  # аннотации — строки, реальных импортов не происходит
+    import numpy as np
+    from PIL import Image
 
 OUTPUT_NAME = "pooler_output"
+
+# `onnxruntime`, `numpy` и `Pillow` намеренно не импортируются на
+# верхнем уровне. Весь этот модуль весит около двухсот мегабайт на диске,
+# и раньше они грузились при каждом старте kurator — из-за одного `import`
+# в `server.py`, который нужен только для проверки «есть ли веса на диске».
+#
+# На Windows это стоило минут: каждый открытый файл бандла проходит через
+# защитник, и десятки мегабайт библиотек в очереди к нему задерживали
+# открытие окна. На macOS было секундой, и правку никто не замечал —
+# она выглядит как ускорение, а на деле это разница между «открылось» и
+# «не открылось».
+#
+# Бандл от этого не худеет: PyInstaller находит импорты в любом месте
+# функции, а не только на верхнем уровне.
 
 
 def model_is_present(path: Path) -> bool:
@@ -65,6 +78,8 @@ def fingerprint(path: Path) -> str:
 
 class SiglipVision:
     def __init__(self, model_path: Path, threads: int | None = None) -> None:
+        import onnxruntime as ort
+
         if not model_is_present(model_path):
             raise FileNotFoundError(
                 f"нет весов: {model_path}\n  поставь: ./scripts/pull-model.sh"
@@ -91,14 +106,22 @@ class SiglipVision:
         self.dim = self._probe_dim()
 
     def _probe_dim(self) -> int:
+        import numpy as np
+
         dummy = np.zeros((1, 3, 224, 224), dtype=np.float32)
         return int(self._run(dummy).shape[1])
 
     def _run(self, batch: np.ndarray) -> np.ndarray:
+        import numpy as np
+
         outs = self.session.run([self.output_name], {self.input_name: batch})
         return np.asarray(outs[0], dtype=np.float32)
 
     def encode(self, images: Iterable[Image.Image]) -> np.ndarray:
+        import numpy as np
+
+        from .imaging import to_siglip_batch
+
         stack = [to_siglip_batch(img) for img in images]
         if not stack:
             return np.zeros((0, self.dim), dtype=np.float32)
@@ -111,6 +134,8 @@ class SiglipVision:
         return (vec / norms).astype(np.float32)
 
     def encode_from_paths(self, paths: list[Path], batch_size: int = BATCH_SIZE) -> tuple[list[Path], np.ndarray]:
+        import numpy as np
+
         from .imaging import BadImage, open_rgb
 
         chunks: list[np.ndarray] = []

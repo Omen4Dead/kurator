@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -136,6 +137,8 @@ def diagnostics(process: subprocess.Popen) -> str:
     - файл экземпляра: пишется сразу после привязки сокета и до
       `serve_forever`. Есть — значит процесс жив и сервер уже слушает,
       и дело не в приложении;
+    - след старта: приложение само пишет, на каком шаге находится, —
+      единственный способ узнать, где оно застряло, если застряло;
     - список слушающих портов: видно, слушает ли вообще кто-то на этом
       порту, и не занят ли он чужим процессом;
     - контрольный сервер в самом проверяющем процессе: если и он не
@@ -148,6 +151,19 @@ def diagnostics(process: subprocess.Popen) -> str:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     lines: list[str] = []
+
+    trace = Path.home() / ".kurator" / "startup-trace.log"
+    if trace.is_file():
+        try:
+            body = trace.read_text(encoding="utf-8").rstrip()
+            lines.append(
+                "след старта (последняя строка — где застряло):\n"
+                + "\n".join("      " + ln for ln in body.splitlines())
+            )
+        except OSError as exc:
+            lines.append(f"след старта не прочитан: {exc!r}")
+    else:
+        lines.append("след старта НЕ создан — процесс не дошёл даже до входа в serve()")
 
     instance = Path.home() / ".kurator" / "instance.json"
     alive = process.poll() is None
@@ -283,6 +299,7 @@ def main() -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env={**os.environ, "KURATOR_TRACE": "1"},
     )
 
     try:

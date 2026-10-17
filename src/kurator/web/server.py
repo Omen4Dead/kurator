@@ -52,6 +52,32 @@ CONTENT_TYPES = {
 THUMB_CACHE_LIMIT = 400
 THUMB_WIDTHS = (128, 256, 512)
 
+TRACE_FILENAME = "startup-trace.log"
+_trace_lines: list[str] = []
+
+
+def trace(message: str) -> None:
+    """Отметить, где находится старт.
+
+    Включается переменной окружения `KURATOR_TRACE=1` и пользователю не
+    мешает. Нужен там, где окна нет: в CI и на чужой машине приложение
+    молча не открывается, и «не открылось» ничем не отличается от
+    «зависло на импорте библиотеки» — а это разные поломки с разными
+    причинами.
+    """
+    if os.environ.get("KURATOR_TRACE") != "1":
+        return
+    _trace_lines.append(f"{time.time():9.1f}  {message}")
+    try:
+        (Path.home() / ".kurator" / TRACE_FILENAME).write_text(
+            "\n".join(_trace_lines) + "\n", encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        pass
+
+
+trace("модуль kurator.web.server загружен")
+
 
 HISTORY_FILENAME = "roots.json"
 INSTANCE_FILENAME = "instance.json"
@@ -967,11 +993,13 @@ def serve(
     с двумя копиями модели в памяти — ровно то, на что жаловался
     пользователь, только сдвоенное.
     """
+    trace(f"serve(): начало, корень задан: {root is not None}")
     if root is None:
         # Запуск без папки — это клик по иконке. Папку не передавали,
         # значит и второй экземпляр пользователю не нужен: он хотел
         # посмотреть тот, который уже открыт.
         running = live_instance()
+        trace(f"живой экземпляр: {running}")
         if running is not None:
             print(f"kurator {__version__}")
             print("уже запущен — открываю его окно")
@@ -981,18 +1009,24 @@ def serve(
         root, source = default_root()
     else:
         source = "из командной строки"
+    trace(f"корень выбран: {root} ({source})")
     model_path = default_model_path()
     if model_path.is_dir():
         model_path = model_path / MODEL_FILENAME
+    trace(f"адрес модели: {model_path}")
     state = State(root, model_path)
+    trace("состояние создано, база открыта")
     remember_root(state.root)
+    trace("корень запомнен")
 
     handler = type("BoundHandler", (Handler,), {"state": state})
     httpd = _Server((host, port), handler)
     state.stop_server = httpd.shutdown
+    trace(f"сокет привязан: {host}:{port}")
 
     url = f"http://{host}:{port}/?token={state.token}"
     write_instance({"url": url, "pid": os.getpid(), "port": port, "root": str(state.root)})
+    trace("экземпляр записан")
     print(f"kurator {__version__}")
     print(f"корень : {state.root}  ({source})")
     print(f"модель : {model_path} {'(на месте)' if state.embedder_available() else '(нет: только хеши)'}")
@@ -1010,10 +1044,12 @@ def serve(
         watchdog.start()
 
     try:
+        trace("слушаю")
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nостанавливаюсь")
     finally:
+        trace("останавливаюсь")
         clear_instance(os.getpid())
         state.close()
         httpd.server_close()

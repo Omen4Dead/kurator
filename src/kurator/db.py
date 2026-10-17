@@ -8,11 +8,12 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
-import numpy as np
+from typing import TYPE_CHECKING, Any
 
 from .config import db_path
+
+if TYPE_CHECKING:  # аннотации — строки, реальных импортов не происходит
+    import numpy as np
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -244,6 +245,8 @@ class Store:
             )
 
     def upsert(self, photo: Photo) -> None:
+        import numpy as np
+
         embed = photo.embed
         if embed is None:
             blob, dim = None, None
@@ -345,6 +348,8 @@ class Store:
         ]
 
     def embeddings(self) -> tuple[list[int], list[str], Any]:
+        import numpy as np
+
         rows = self.query(
             "SELECT id, rel_path, embed, embed_dim FROM photos "
             "WHERE embed IS NOT NULL ORDER BY COALESCE(taken_at, ''), rel_path"
