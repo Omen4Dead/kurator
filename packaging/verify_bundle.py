@@ -87,7 +87,91 @@ def wait_for_server(process: subprocess.Popen) -> None:
         except Exception as exc:
             last = exc
             time.sleep(0.4)
-    fail(f"сервер не поднялся за 120 секунд, последняя причина: {last!r}" + _error_report())
+    fail(
+        "сервер не поднялся за 120 секунд, последняя причина: "
+        f"{last!r}\n\n{diagnostics(process)}" + _error_report()
+    )
+
+
+def diagnostics(process: subprocess.Popen) -> str:
+    """Показать, где именно приложение остановилось.
+
+    «Не поднялся» — не причина, а наблюдение, и оно одинаково выглядит
+    при трёх совершенно разных поломках: приложение упало, приложение
+    висит до сокета, или сокет слушает, а пакеты до него не доходят.
+    Разбираться приходилось вслепую — по одному этому сообщению.
+
+    Три прибора, каждый отвечает на свой вопрос:
+
+    - файл экземпляра: пишется сразу после привязки сокета и до
+      `serve_forever`. Есть — значит процесс жив и сервер уже слушает,
+      и дело не в приложении;
+    - список слушающих портов: видно, слушает ли вообще кто-то на этом
+      порту, и не занят ли он чужим процессом;
+    - контрольный сервер в самом проверяющем процессе: если и он не
+      отвечает, то дело не в kurator, а в среде — например, в брандмауэре,
+      молча роняющем пакеты.
+    """
+    import json
+    import socket
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    lines: list[str] = []
+
+    instance = Path.home() / ".kurator" / "instance.json"
+    alive = process.poll() is None
+    lines.append(f"процесс жив: {alive}, pid {process.pid}")
+    if instance.is_file():
+        try:
+            data = json.loads(instance.read_text(encoding="utf-8"))
+            lines.append(
+                f"файл экземпляра есть: pid {data.get('pid')}, порт {data.get('port')} "
+                f"— значит сервер уже привязан и дело не в запуске"
+            )
+        except (OSError, ValueError):
+            lines.append("файл экземпляра есть, но прочитать его не удалось")
+    else:
+        lines.append("файл экземпляра НЕ создан — до привязки сокета не дошли")
+
+    try:
+        netstat = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=30
+        ).stdout
+        listening = [ln.strip() for ln in netstat.splitlines() if f":{PORT}" in ln]
+        lines.append(
+            "слушает на порту: " + ("; ".join(listening[:4]) or "никто не слушает")
+        )
+    except Exception as exc:
+        lines.append(f"netstat не отработал: {exc!r}")
+
+    class _Quiet(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 — имя задано BaseHTTPRequestHandler
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, fmt: str, *args) -> None:
+            pass
+
+    control = ThreadingHTTPServer(("127.0.0.1", 0), _Quiet)
+    threading.Thread(target=control.serve_forever, daemon=True).start()
+    try:
+        with socket.create_connection(("127.0.0.1", control.server_address[1]), 5) as sock:
+            sock.sendall(b"GET / HTTP/1.0\r\n\r\n")
+            got = sock.recv(16)
+        lines.append(
+            "контрольный сервер в этой же среде: "
+            + ("отвечает" if b"200" in got else f"ответил странно {got!r}")
+        )
+    except Exception as exc:
+        lines.append(f"контрольный сервер НЕ отвечает: {exc!r} — дело в среде, не в kurator")
+    finally:
+        control.shutdown()
+        control.server_close()
+
+    return "\n".join(f"  {line}" for line in lines)
 
 
 def _error_report() -> str:
