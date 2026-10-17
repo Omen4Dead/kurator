@@ -152,6 +152,30 @@ def diagnostics(process: subprocess.Popen) -> str:
 
     lines: list[str] = []
 
+    # Жив ли процесс — надо узнать ДО того, как мы его убьём ниже.
+    was_alive = process.poll() is None
+
+    # Сначала читаем то, что приложение успело написать. Трубу мы сами же
+    # и перенаправили в stderr — и молча выбросили, а это единственное
+    # место, где загрузчик PyInstaller оставляет объяснение, если падает
+    # до запуска Python. Убиваем процесс, и только потом читаем: пока он
+    # жив, чтение из трубы не вернётся.
+    try:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=30)
+    except Exception as exc:
+        lines.append(f"не смог остановить процесс: {exc!r}")
+    try:
+        if process.stdout is not None:
+            said = process.stdout.read().strip()
+            lines.append(
+                "приложение написало само:\n"
+                + ("\n".join("      " + ln for ln in said.splitlines()) or "      (пусто)")
+            )
+    except Exception as exc:
+        lines.append(f"вывод приложения не прочитан: {exc!r}")
+
     trace = Path.home() / ".kurator" / "startup-trace.log"
     if trace.is_file():
         try:
@@ -166,8 +190,7 @@ def diagnostics(process: subprocess.Popen) -> str:
         lines.append("след старта НЕ создан — процесс не дошёл даже до входа в serve()")
 
     instance = Path.home() / ".kurator" / "instance.json"
-    alive = process.poll() is None
-    lines.append(f"процесс жив: {alive}, pid {process.pid}")
+    lines.append(f"процесс жив: {was_alive}, pid {process.pid}")
     if instance.is_file():
         try:
             data = json.loads(instance.read_text(encoding="utf-8"))
