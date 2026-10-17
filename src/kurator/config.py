@@ -9,6 +9,30 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_ROOT.parent.parent
 
+# Сырые файлы камер.
+#
+# Список не из фантазий, а из того, как устроен контейнер: Pillow читает
+# RAW как обычный TIFF, потому что это TIFF-контейнеры — CR2 (Canon),
+# NEF (Nikon), ARW (Sony), ORF (Olympus), RW2 (Panasonic), DNG (Adobe),
+# PEF (Pentax), SRW (Samsung), ERF (Epson).
+#
+# Чего здесь нет и почему: RAF (Fujifilm) и X3F (Sigma) устроены иначе,
+# Pillow их не открывает. Если добавить их, каждый такой файл будет
+# падать в счётчик «нечитаемых», и поддержка RAW окажется поддержкой
+# с ошибками в каждом втором архиве. Лучше не видеть их совсем, чем видеть
+# и врать.
+RAW_EXTENSIONS = {
+    ".cr2",   # Canon
+    ".nef",   # Nikon
+    ".arw",   # Sony
+    ".orf",   # Olympus, Panasonic- Lumix
+    ".rw2",   # Panasonic
+    ".dng",   # Adobe, в том числе пересобранные из других
+    ".pef",   # Pentax
+    ".srw",   # Samsung
+    ".erf",   # Epson
+}
+
 IMAGE_EXTENSIONS = {
     ".jpg",
     ".jpeg",
@@ -21,6 +45,7 @@ IMAGE_EXTENSIONS = {
     ".tiff",
     ".bmp",
     ".gif",
+    *RAW_EXTENSIONS,
 }
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".heic-mov"}
@@ -87,6 +112,28 @@ def default_model_path() -> Path:
         base = Path(getattr(sys, "_MEIPASS", "") or Path(sys.executable).resolve().parent)
         return base / "models" / MODEL_FILENAME
     return PROJECT_ROOT / "models" / MODEL_FILENAME
+
+
+def rel_posix(path: Path, root: Path) -> str:
+    """Путь относительно корня всегда через «/».
+
+    Индекс, манифесты и веб-интерфейс сравнивают и режут пути через
+    `split("/")`. `str(path.relative_to(root))` на Windows даёт обратные
+    слэши, и дальше это расходится: `list_trash` читает из манифеста
+    `.kurator\\quarantine\\a.jpg`, а при обходе диска получает
+    `.kurator/quarantine/a.jpg`. Один файл — два разных ключа, он
+    показывается в корзине дважды, а удаление сбрасывает только один.
+
+    Поэтому любой относительный путь, который попадает в индекс, манифест
+    или ответ API, проходит здесь. Обратно разворачивается через
+    `Path(*rel.split("/"))`.
+    """
+    return path.relative_to(root).as_posix()
+
+
+def unflatten(rel: str) -> Path:
+    """Развернуть путь из индекса обратно в `Path` текущей системы."""
+    return Path(*rel.split("/"))
 
 
 def is_image(path: Path) -> bool:

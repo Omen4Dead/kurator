@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  # Все ветки, а не только main: пока этап не смержен, его правки проверять
+  # нечем, иначе кроссплатформенные баги (0.1–0.6) годами ждут своего часа
+  # в main. Бонус — красный тест на Linux виден сразу, а не после мержа.
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Ветка получает одну группу и при пуше, и при PR: у пуша это имя ветки,
+  # у PR — имя ветки-источника. Без этого каждый PR гонял бы тесты дважды,
+  # раз по push и раз по pull_request. Новый пуш отменяет старый прогон.
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event_name == 'pull_request' && github.head_ref || github.ref_name
+    }}
+  cancel-in-progress: true
+
+jobs:
+  # Рельс, на котором ездят все остальные проверки. Опечатка здесь не
+  # останавливает разработку — git работает, тесты локально зелёные, а
+  # проверок просто нет, потому что сломалось то, что их запускает.
+  # Поэтому воркфлои проверяются первыми и на самой дешёвой системе.
+  workflows:
+    name: воркфлои в порядке
+  # Без этого прогон может висеть шесть часов: GitHub по умолчанию
+  # держит лимит 360 минут, и один зависший тест съедает их молча.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      # pyyaml нужен один раз и только здесь: тащить его в зависимости
+      # проекта ради проверки его же файлов сборки незачем.
+      - name: Проверить воркфлои
+        run: uv run --with pyyaml python scripts/check_workflows.py
+
+  # Быстрый прогон на трёх системах без весов. Четыре теста, которым нужна
+  # модель, честно пропускаются, остальные идут за три секунды — именно
+  # поэтому джоб дешёвый и гоняется на каждый пуш.
+  #
+  # Пока этого джоба не было, `sips` не всплывал с октября: на macOS он
+  # есть всегда и падать нечему, а проверить было негде. Теперь молчаливые
+  # поломки видны сразу — на Linux падает подстановка sips, на Windows
+  # разъезжаются пути с обратными слэшами.
+  fast:
+    name: pytest · ${{ matrix.os }} · py${{ matrix.python }}
+    timeout-minutes: 15
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.13"]
+        include:
+          # Минимальная поддерживаемая версия — на самой дешёвой системе.
+          - os: ubuntu-latest
+            python: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          # Версию Python надо назвать явно. Иначе uv берёт ту, что стоит на
+          # образе: на macos-latest это homebrew 3.15, а wheels onnxruntime
+          # для неё не существует и сборка падает на ровном месте.
+          python-version: ${{ matrix.python }}
+
+      # Скрипт, которым Windows-пользователь тянет веса: на этой системе
+      # нет bash, поэтому `pull-model.sh` недоступен. Локально проверить его
+      # нечем — pwsh на машине разработчика может стоять, а может и нет, —
+      # а ломается он как раз у того, кто ставит kurator впервые.
+      - name: Синтаксис pull-model.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "${{ github.workspace }}/scripts/pull-model.ps1", [ref]$null, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "синтаксис в порядке"
+
+      - name: pytest без весов
+        env:
+          # Путь, которого нет: тесты с моделью должны пропуститься, а не
+          # скачать 90 МБ в каждом джобе. Относительный — одинаково
+          # неправильный на всех трёх системах.
+          KURATOR_MODEL: no-such-model/vision_model_int8.onnx
+        run: uv run pytest -q
+
+  # Сквозной прогон с моделью на Linux. Здесь сходятся дедупликация,
+  # эмбеддинги и карантин вместе — то, чего быстрый джоб не проверяет.
+  end-to-end:
+    name: сквозной прогон с моделью
+  # Без этого прогон может висеть шесть часов: GitHub по умолчанию
+  # держит лимит 360 минут, и один зависший тест съедает их молча.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Кэш весов
+        uses: actions/cache@v4
+        with:
+          path: models
+          # Ключ — первые биты sha256 из scripts/pull-model.sh. Смена весов
+          # пересобирает кэш сам, а не по дате коммита.
+          key: siglip2-int8-0dd31785
+
+      - name: Скачать веса
+        # Скрипт вызывается всегда, даже при попадании в кэш: у него есть
+        # своя проверка sha256, и битый кэш должен падать здесь, а не
+        # молча давать неверные эмбеддинги.
+        run: ./scripts/pull-model.sh
+
+      - name: pytest с весами
+        run: uv run pytest -q
+
+      - name: Собрать тестовый архив
+        run: uv run python scripts/make_testset.py "$RUNNER_TEMP/kurator-test" 180
+
+      # Память меряется на каждом этапе отдельно. `evaluate` печатает
+      # метрики и молчит про расход, из-за чего рост не замечали годами:
+      # на синтетике матрицы расстояний съедают полмегабайта, на живом
+      # архиве те же строки — полтора гигабайта.
+      - name: Индекс (с памятью)
+        run: >-
+          uv run python scripts/measure_rss.py индекс --
+          uv run kurator index "$RUNNER_TEMP/kurator-test"
+
+      - name: Точность против эталона (с памятью)
+        run: >-
+          uv run python scripts/measure_rss.py разбор --
+          uv run kurator evaluate "$RUNNER_TEMP/kurator-test" --sweep

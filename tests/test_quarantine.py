@@ -1,7 +1,9 @@
 import datetime as dt
+import json
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from kurator.config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME
 from kurator.db import Store
 from kurator.quarantine import apply_moves, plan_moves, quarantine_root, undo_last_run
 
@@ -213,11 +215,39 @@ def test_index_status_survives_missing_meta(tmp_path):
     assert status["last_index_at"] is None
 
 
-def test_blocked_roots_are_rejected():
+def test_blocked_roots_are_rejected(tmp_path):
+    """Корни, с которыми kurator не должен работать, помечены.
+
+    Проверяется через `PurePosixPath` и `PureWindowsPath`, а не через
+    `Path`: `Path` на каждой системе даёт свой путь, и проверка вроде
+    `too_broad(Path("/System"))` на Windows утверждала бы POSIX-поведение
+    там, где такого пути и корня нет. Это был красный тест на Windows,
+    который искал баг в отсутствующем месте.
+    """
     from kurator.web.server import too_broad
 
-    assert too_broad(Path("/")) is True
-    assert too_broad(Path("/System")) is True
+    # POSIX: корень и системные каталоги, куда лезть бессмысленно.
+    for posix_root in ("/", "/bin", "/etc", "/System", "/usr", "/var"):
+        assert too_broad(PurePosixPath(posix_root)) is True, posix_root
+
+    # Windows: корни томов. Буквы дисков заранее не перечислишь, поэтому
+    # они ловятся регуляркой, а не списком. Без этого указал бы kurator
+    # на `C:\` — и он пошёл бы обходить всю систему.
+    for win_root in ("C:\\", "d:/", "Z:\\"):
+        assert too_broad(PureWindowsPath(win_root)) is True, win_root
+
+    # Голый разделитель: на POSIX это корень системы, на Windows — корень
+    # текущего тома. Второй случай опаснее и тоже обязан быть помечен.
+    assert too_broad(PureWindowsPath("/")) is True
+    assert too_broad(PureWindowsPath("\\")) is True
+
+    # А вот обычная папка помечена быть не должна — иначе kurator
+    # откажется работать там, где ему положено работать. Здесь путь
+    # настоящий: `PurePosixPath` не умеет `is_dir()`, а `too_broad`
+    # обращается к диску для папок, которых нет в списке.
+    archive = Path(tmp_path) / "Photos"
+    archive.mkdir()
+    assert too_broad(archive) is False
 
 
 def test_dry_run_writes_nothing(tmp_path):
@@ -340,6 +370,51 @@ def test_list_trash_shows_quarantined_files_with_origin(tmp_path):
     assert {i["from_path"] for i in items} == {"a.jpg", "b.jpg"}
     assert all(i["to_path"].startswith(".kurator/quarantine/") for i in items)
     assert all(i["size"] > 0 and i["orphan"] is False for i in items)
+    store.close()
+
+
+def test_manifest_written_with_backslashes_is_read_as_posix(tmp_path):
+    """Манифест, написанный на Windows, должен читаться как будто там «/».
+
+    Регрессия, найденная CI на Windows. `list_trash` брала ключ из манифеста
+    как есть, а при обходе диска — через `as_posix()`. На Windows это
+    `.kurator\\quarantine\\a.jpg` и `.kurator/quarantine/a.jpg`: один и тот
+    же файл получал два ключа, не попадал в `claimed` и показывался в
+    корзине дважды. Из того же расхождения ломалось удаление: сбрасывался
+    один ключ, второй оставался, и файл не уходил.
+
+    Тест пишет манифест руками, обратными слэшами — ровно так, как его
+    пишет Windows.
+    """
+    import json
+
+    from kurator.db import Photo
+    from kurator.quarantine import apply_moves, list_trash, plan_moves
+
+    store = Store.open(tmp_path)
+    for name in ("a.jpg", "b.jpg"):
+        p = tmp_path / name
+        p.write_bytes(name.encode() * 10)
+        info = p.stat()
+        store.upsert(Photo(rel_path=name, size=info.st_size, mtime=info.st_mtime, md5=name))
+    store.commit()
+
+    apply_moves(store, plan_moves(tmp_path, ["a.jpg", "b.jpg"]), kind="by-hand", dry_run=False)
+
+    # Переписываем манифест в том виде, в котором его оставила бы Windows.
+    manifest = next(quarantine_root(tmp_path).glob("*.json"))
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    for move in payload["moves"]:
+        for field in ("from", "to"):
+            move[field] = move[field].replace("/", "\\")
+    manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    items = list_trash(store)
+
+    assert len(items) == 2, f"файлы задвоились: {[i['key'] for i in items]}"
+    assert all("\\" not in i["key"] for i in items), "в ключе остались обратные слэши"
+    assert {i["from_path"] for i in items} == {"a.jpg", "b.jpg"}
+    assert all(i["orphan"] is False for i in items), "файл потерял манифест"
     store.close()
 
 
@@ -491,10 +566,25 @@ def test_migration_moves_quarantine_and_keeps_undo_working(tmp_path):
     shutil.move(str(tmp_path / "a.jpg"), str(legacy / "a.jpg"))
     shutil.move(str(tmp_path / "b.jpg"), str(legacy / "b.jpg"))
     manifest = legacy / "manifest_by-hand_1_2.json"
+    # Пишем через json.dumps, а не строкой: на Windows в tmp_path есть
+    # обратные слэши, и такая строка даёт невалидный JSON. Манифест
+    # не читается, миграция его молча пропускает, и тест падает не там,
+    # где дело.
     manifest.write_text(
-        '{"kind":"by-hand","root":"%s","created_at":"2026-01-01T00:00:00","count":2,'
-        '"bytes":24,"moves":[{"from":"a.jpg","to":"_kurator_quarantine/a.jpg"},'
-        '{"from":"b.jpg","to":"_kurator_quarantine/b.jpg"}]}' % tmp_path,
+        json.dumps(
+            {
+                "kind": "by-hand",
+                "root": str(tmp_path),
+                "created_at": "2026-01-01T00:00:00",
+                "count": 2,
+                "bytes": 24,
+                "moves": [
+                    {"from": "a.jpg", "to": f"{LEGACY_QUARANTINE_DIRNAME}/a.jpg"},
+                    {"from": "b.jpg", "to": f"{LEGACY_QUARANTINE_DIRNAME}/b.jpg"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     store.start_run("by-hand", manifest)
@@ -547,10 +637,21 @@ def test_prune_drops_manifests_without_any_file(tmp_path):
     store = make_store(tmp_path)
     apply_moves(store, plan_moves(tmp_path, ["b.txt"]), kind="by-hand", dry_run=False)
     stale = quarantine_root(tmp_path) / "manifest_by-hand_ghost.json"
+    # Путь внутри манифеста — относительно корня и уже в новой папке
+    # карантина: старый `_kurator_quarantine` был бы уже не про эту
+    # функцию, а про миграцию, которая проверяется отдельно.
     stale.write_text(
-        '{"kind":"by-hand","root":"%s","created_at":"2026-01-01T00:00:00",'
-        '"count":1,"bytes":0,"moves":[{"from":"ghost.txt",'
-        '"to":"_kurator_quarantine/ghost.txt"}]}' % tmp_path,
+        json.dumps(
+            {
+                "kind": "by-hand",
+                "root": str(tmp_path),
+                "created_at": "2026-01-01T00:00:00",
+                "count": 1,
+                "bytes": 0,
+                "moves": [{"from": "ghost.txt", "to": f"{QUARANTINE_DIRNAME}/ghost.txt"}],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -569,7 +670,10 @@ def test_prune_drops_empty_manifests(tmp_path):
     store = make_store(tmp_path)
     apply_moves(store, plan_moves(tmp_path, ["b.txt"]), kind="by-hand", dry_run=False)
     empty = quarantine_root(tmp_path) / "manifest_by-hand_empty.json"
-    empty.write_text('{"kind":"by-hand","root":"%s","moves":[]}' % tmp_path, encoding="utf-8")
+    empty.write_text(
+        json.dumps({"kind": "by-hand", "root": str(tmp_path), "moves": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     prune_stale_manifests(store)
 
@@ -596,8 +700,14 @@ def test_delete_trash_also_cleans_history_of_dead_runs(tmp_path):
     # манифест от несуществующего переноса, как остаётся после старых багов
     ghost = quarantine_root(tmp_path) / "manifest_by-hand_ghost.json"
     ghost.write_text(
-        '{"kind":"by-hand","root":"%s","moves":[{"from":"z.jpg",'
-        '"to":".kurator/quarantine/z.jpg"}]}' % tmp_path,
+        json.dumps(
+            {
+                "kind": "by-hand",
+                "root": str(tmp_path),
+                "moves": [{"from": "z.jpg", "to": f"{QUARANTINE_DIRNAME}/z.jpg"}],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -630,3 +740,34 @@ def test_prune_counts_rows_once(tmp_path):
     assert result["manifests"] == 0, "живой манифест не трогаем"
     assert result["rows"] == 0, "живую запись не вычищаем"
     store.close()
+
+
+def test_move_across_volumes_copies_instead_of_failing(tmp_path, monkeypatch):
+    """Перенос между томами должен копировать, а не падать.
+
+    `shutil.move` бросает `OSError` с `EXDEV`, если источник и цель на
+    разных томах. Карантин лежит внутри корня, так что обычно том один, но
+    вложенная точка монтирования или NTFS-junction это ломает — причём на
+    откате, то есть ровно тогда, когда человек ждёт возврата файлов.
+
+    Подменяем `shutil.move` на тот, что всегда падает с `EXDEV`, и проверяем,
+    что файл всё-таки переехал, а оригинал убран.
+    """
+    import errno as errno_module
+
+    from kurator.quarantine import _move_file
+
+    src = tmp_path / "src.txt"
+    src.write_text("данные", encoding="utf-8")
+    dst = tmp_path / "sub" / "dst.txt"
+    dst.parent.mkdir()
+
+    def always_exdev(_src, _dst):
+        raise OSError(errno_module.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(shutil, "move", always_exdev)
+
+    _move_file(src, dst)
+
+    assert dst.read_text(encoding="utf-8") == "данные", "файл не переехал"
+    assert not src.exists(), "оригинал остался на месте"

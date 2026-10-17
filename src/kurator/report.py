@@ -243,7 +243,7 @@ def _html(
         f'<p class="sub"><code>{esc(str(root))}</code> · снимков в индексе: {len(index)} · '
         f"модель <code>{esc(MODEL_REPO)}</code> локально</p>",
         '<div class="warn">Ничего не удаляется: файлы только переносятся в '
-        "<code>_kurator_quarantine/</code>, откат — одной командой.</div>",
+        "<code>.kurator/quarantine/</code>, откат — одной командой.</div>",
         "<h2>Итог</h2><table>",
         "<tr><th>что</th><th>групп</th></tr>",
     ]

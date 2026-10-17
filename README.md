@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/Omen4Dead/kurator/releases/latest">
-    <img src="https://img.shields.io/badge/скачать-kurator--0.1.0-E8590C?style=for-the-badge" alt="Скачать kurator 0.1.0">
+    <img src="https://img.shields.io/badge/скачать-kurator--0.2.0-E8590C?style=for-the-badge" alt="Скачать kurator 0.2.0">
   </a>
 </p>
 
@@ -43,7 +43,7 @@
 **Не отправляет в облако.** Сетевого кода в рантайме нет: единственное обращение
 наружу — `./scripts/pull-model.sh`, при сборке из исходников.
 
-**Интерфейс виден только вашеу компьютеру.** Он слушает `localhost` и требует
+**Интерфейс виден только вашему компьютеру.** Он слушает `localhost` и требует
 случайный токен, который создаётся при запуске, поэтому чужая страница в
 браузере не обратится к вашим фотографиям.
 
@@ -82,11 +82,43 @@ uv run kurator models      # проверить, что модель на мес
 ### Собрать установщик
 
 ```bash
-./packaging/build.sh       # dist/kurator.app и dist/kurator.dmg
+./packaging/build.sh       # macOS: dist/kurator.app и dist/kurator.dmg
 ```
 
-Под macOS проверено полностью, есть установщик. Linux работает из исходников.
-**Windows-совместимость пока не реализована**.
+На Windows то же самое, и для этого есть PowerShell-скрипт:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build-windows.ps1
+```
+
+PyInstaller не умеет кросс-компиляцию, поэтому Windows-сборку можно сделать
+только на Windows. Обычно это и не требуется: установщик `kurator.exe`
+собирается в CI при мёрже в `main` и лежит в
+[релизах](https://github.com/Omen4Dead/kurator/releases/latest).
+
+Под macOS проверено полностью, есть установщик. Linux и Windows работают
+из исходников; установщика для них пока нет, и на Windows приложение
+запускается через `kurator ui`.
+
+#### Длинные пути в Windows
+
+Лимит в 260 символов — системный, и реальные архивы в него упираются:
+
+```
+Photos from 2024\Отпуск\Испания\Барселона\IMG_20240704_101112.jpg
+```
+
+Включается один раз через PowerShell от администратора:
+
+```powershell
+New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+  -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+```
+
+После этого нужен вход в систему заново. Ошибки станут заметны сразу:
+`OSError: [Errno 206] Filename or extension is too long`. Если снимок
+не читается, kurator не пропускает его молча — он попадает в счётчик
+`нечитаемых файлов` при индексации.
 
 ## Использование
 
@@ -218,6 +250,11 @@ uv run pytest -q
 Тесты, которым нужна модель, пропускаются, если веса не скачаны. Сквозной тест
 генерирует архив, индексирует его и требует, чтобы ни одно расхождение с
 эталоном не осталось.
+
+Те же тесты гоняет CI: быстрый `pytest` без весов на macOS, Linux и Windows и
+сквозной прогон с моделью на Linux. Пока сборка проверялась только руками на
+macOS, поломки на других системах не всплывали — например, вызов макосовской
+`sips`, который вне её молча возвращает пустоту.
 
 Генератор тестового набора кладёт в архив точные дубли, похожие кадры разного
 качества, burst-серии, битые jpeg, файлы без EXIF и не-картинки:

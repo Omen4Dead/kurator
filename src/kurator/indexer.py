@@ -12,13 +12,15 @@ from .config import (
     IMAGE_EXTENSIONS,
     SKIP_DIRNAMES,
     VIDEO_EXTENSIONS,
+    rel_posix,
+    unflatten,
 )
 from .db import Photo, Store
 from .encoder import SiglipVision, model_is_present
 from .hashing import md5_file, to_hex
 from PIL import Image
 
-from .imaging import BadImage, hash_views, load_for_analysis, open_rgb, read_exif
+from .imaging import BadImage, file_times, hash_views, load_for_analysis, open_rgb, read_exif
 
 
 def walk_media(root: Path) -> Iterator[tuple[str, Path]]:
@@ -33,7 +35,10 @@ def walk_media(root: Path) -> Iterator[tuple[str, Path]]:
             suffix = path.suffix.lower()
             if suffix not in IMAGE_EXTENSIONS and suffix not in VIDEO_EXTENSIONS:
                 continue
-            yield str(path.relative_to(root)), path
+            # Через rel_posix, а не str(relative_to()): на Windows второй
+            # даёт обратные слэши, и путь потом не находится ни через
+            # split("/") в отчёте, ни при сравнении в индексе.
+            yield rel_posix(path, root), path
 
 
 def index_root(
@@ -65,12 +70,12 @@ def index_root(
         if only_paths is not None and rel not in only_paths:
             continue
         stats["seen"] += 1
-        present.add(rel)
+        present.add(rel.casefold())
         try:
             info = path.stat()
         except OSError:
             continue
-        previous = known.get(rel)
+        previous = known.get(rel.casefold())
         if previous and previous[0] == info.st_size and previous[1] == info.st_mtime:
             stats["skipped"] += 1
             continue
@@ -159,15 +164,15 @@ def backfill_embeddings(
     rows = [r for r in store.iter_rows() if r["embed"] is None and not r["is_video"]]
     if not rows:
         return 0
-    paths = [root / r["rel_path"] for r in rows]
+    paths = [root / unflatten(r["rel_path"]) for r in rows]
     done = 0
     for start in range(0, len(rows), BATCH_SIZE):
         batch_rows = rows[start : start + BATCH_SIZE]
         batch_paths = paths[start : start + BATCH_SIZE]
         used, vectors = encoder.encode_from_paths(batch_paths)
-        lookup = {str(p.relative_to(root)): r for p, r in zip(batch_paths, batch_rows)}
+        lookup = {rel_posix(p, root): r for p, r in zip(batch_paths, batch_rows)}
         for path, vector in zip(used, vectors):
-            row = lookup[str(path)]
+            row = lookup[rel_posix(path, root)]
             photo = Photo(
                 rel_path=row["rel_path"],
                 size=row["size"],
@@ -184,15 +189,15 @@ def backfill_embeddings(
 
 
 def _fallback_date(path: Path) -> str | None:
-    """Когда EXIF нет, берём дату изменения файла."""
-    try:
-        info = path.stat()
-    except OSError:
-        return None
-    import datetime as dt
+    """Когда EXIF нет, берём дату, которую знает система.
 
-    moment = getattr(info, "st_birthtime", info.st_mtime)
-    return dt.datetime.fromtimestamp(moment).isoformat(timespec="seconds")
+    Живёт здесь и в `imaging.file_times` — одна и та же цепочка
+    `st_birthtime` → `st_mtime`, чтобы индекс и чтение файла не
+    расходились на разных системах.
+    """
+    if not path.exists():
+        return None
+    return file_times(path).isoformat(timespec="seconds")
 
 
 def index_paths(root: Path, store: Store, rel_paths: list[str]) -> int:
@@ -200,13 +205,17 @@ def index_paths(root: Path, store: Store, rel_paths: list[str]) -> int:
     root = root.resolve()
     store.forget(rel_paths)
     known = store.known_state()
-    present = {rel: root / rel for rel in rel_paths if (root / rel).is_file()}
+    present = {rel: root / unflatten(rel) for rel in rel_paths if (root / unflatten(rel)).is_file()}
     stats = index_root(
         root,
         store,
         encoder=None,
         rehash=False,
-        known_override={rel: (known[rel][0], known[rel][1]) for rel in present if rel in known},
+        known_override={
+            rel.casefold(): (known[rel.casefold()][0], known[rel.casefold()][1])
+            for rel in present
+            if rel.casefold() in known
+        },
         only_paths=set(present),
     )
     return stats["indexed"]

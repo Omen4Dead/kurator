@@ -17,19 +17,47 @@ FG = (228, 228, 231)
 ACCENT = (250, 204, 21)
 MUTED = (161, 161, 170)
 
+# Подписи на контакт-листах. Порядок — по убыванию привычности: сначала
+# системный шрифт той системы, где снимок и смотрят, потом переносимые
+# sans-serif, которые есть почти везде.
+FONT_CANDIDATES = (
+    # macOS
+    "/System/Library/Fonts/SFNS.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+    # Windows
+    "C:/Windows/Fonts/segoeui.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/verdana.ttf",
+    # Linux
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+)
+
 
 def _font(size: int) -> ImageFont.ImageFont:
-    for path in (
-        "/System/Library/Fonts/SFNS.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/Library/Fonts/Arial.ttf",
-    ):
+    """Найти шрифт, пригодный для подписей.
+
+    Список был из трёх макосовских путей, поэтому на любой другой системе
+    он оказывался пустым и `load_default()` рисовал нечитаемый растровый
+    шрифт прямоугольниками. Ниже — кандидаты всех трёх платформ, и если не
+    нашлось ни одного, это видно по подписи, а не молча.
+    """
+    for path in FONT_CANDIDATES:
         if Path(path).is_file():
             try:
                 return ImageFont.truetype(path, size)
             except OSError:
                 continue
     return ImageFont.load_default()
+
+
+def _font_is_readable() -> bool:
+    """Понятно ли, что подпись нарисована шрифтом, а не заглушкой."""
+    return any(Path(path).is_file() for path in FONT_CANDIDATES)
 
 
 def _short(path: str, limit: int = 30) -> str:

@@ -1,0 +1,168 @@
+name: Сборка
+
+# Отдельно от ci.yml, и это осознанно.
+#
+# Тесты должны идти на каждом пуше: они быстрые и ловят правки логики.
+# А вот собранное приложение — это артефакт, и пересобирать его на каждый
+# коммит незачем: сборка занимает минуты и весит под сотню мегабайт.
+#
+# Раскладка по трём триггерам:
+#
+#   PR с изменёнными файлами сборки — собрать и ПРОВЕРИТЬ, ничего не хранить.
+#     Нужно, чтобы сломанный spec не попал в main: обнаружился бы он там
+#     уже после мержа.
+#   push в main — собрать и проверить, артефакт остаётся в прогоне.
+#     Смысл: main всегда собирается и работает.
+#   тег v* — то же плюс приложить к релизу на GitHub.
+#
+# Проверка обязательна и в самом конце: сборка, которая создалась, но не
+# открывает страницу или не считает эмбеддинги, — не сборка. Уже было две
+# такие ошибки, и обе выглядели как «приложение собралось, значит всё в
+# порядке».
+
+on:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "scripts/**"
+      - "src/**"
+      - "assets/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/build.yml"
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event_name == 'pull_request' && github.head_ref || github.ref_name
+    }}
+  cancel-in-progress: true
+
+env:
+  # Ключ — первые биты sha256 из scripts/pull-model.sh. Смена весов
+  # пересобирает кэш сама, а не по дате коммита.
+  WEIGHTS_KEY: siglip2-int8-0dd31785
+
+jobs:
+  macos:
+    name: kurator.app (macOS)
+  # Сборка дольше тестов: веса, PyInstaller и Inno Setup.
+    timeout-minutes: 45
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          # Версию Python надо назвать явно: иначе uv берёт homebrew и падает
+          # на отсутствии wheels, как уже случалось.
+          python-version: "3.13"
+
+      - uses: actions/cache@v4
+        with:
+          path: models
+          key: ${{ env.WEIGHTS_KEY }}
+
+      - name: Скачать веса
+        run: ./scripts/pull-model.sh
+
+      - name: Собрать приложение
+        env:
+          # На PR установщик не нужен — там проверяется только бандл.
+          # На main и теге нужен: его качает человек.
+          KURATOR_NO_INSTALLER: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+        run: ./packaging/build.sh
+
+      - name: Проверить собранное приложение
+        run: uv run python packaging/verify_bundle.py dist/kurator.app
+
+      - name: Приложить установщик
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kurator-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: kurator.exe (Windows)
+  # Сборка дольше тестов: веса, PyInstaller и Inno Setup.
+    timeout-minutes: 45
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - uses: actions/cache@v4
+        with:
+          path: models
+          key: ${{ env.WEIGHTS_KEY }}
+
+      - name: Скачать веса
+        shell: pwsh
+        run: ./scripts/pull-model.ps1
+
+      - name: Собрать установщик
+        shell: pwsh
+        # `-NoInstaller` только на PR: там проверяется бандл, а установщик
+        # собирать незачем. На main и теге он и есть тот файл, который
+        # человек скачивает.
+        run: ./packaging/build-windows.ps1 -NoInstaller:${{ github.event_name == 'pull_request' }}
+
+      - name: Проверить собранное приложение
+        run: uv run python packaging/verify_bundle.py dist/kurator
+
+      - name: Приложить установщик
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kurator-windows
+          path: dist/kurator-setup.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  # Релиз появляется только по тегу. На обычный пуш в main артефакты
+  # лежат в прогоне: их достаточно, чтобы скачать и проверить, а публиковать
+  # что-то в релиз на каждом коммите нельзя — релиз должен означать версию.
+  release:
+    name: Приложить к релизу
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+  # Сборка дольше тестов: веса, PyInstaller и Inno Setup.
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Опубликовать
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "прикладываю к релизу $TAG"
+          ls -la dist/
+
+          # Релиз может быть создан вручную заранее или не существовать
+          # вовсе. Создаём недостающий, а существующий не трогаем: в нём
+          # могут быть написанные вручную заметки.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "kurator $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          echo "готово: https://github.com/${{ github.repository }}/releases/tag/$TAG"

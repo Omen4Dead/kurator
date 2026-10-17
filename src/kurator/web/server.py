@@ -10,13 +10,17 @@ from __future__ import annotations
 import io
 import json
 import mimetypes
+import os
+import re
 import sqlite3
 import secrets
 import threading
 import time
+import urllib.request
 import webbrowser
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, unquote, urlparse
@@ -50,10 +54,100 @@ THUMB_WIDTHS = (128, 256, 512)
 
 
 HISTORY_FILENAME = "roots.json"
+INSTANCE_FILENAME = "instance.json"
+
+DEFAULT_PORT = 8765
+# Сколько ждать, пока вкладка не появится, и сколько после её закрытия.
+# Приложение без вкладки — процесс без работы: он держит модель и индекс
+# в памяти, но пользы от него нет. Ждать нужно не мгновенно: перезагрузка
+# страницы и переключение между двумя вкладками тоже выглядят как закрытие.
+IDLE_SHUTDOWN_SECONDS = 180
+
+
+def state_dir() -> Path:
+    return Path.home() / ".kurator"
 
 
 def history_path() -> Path:
-    return Path.home() / ".kurator" / HISTORY_FILENAME
+    return state_dir() / HISTORY_FILENAME
+
+
+def instance_path() -> Path:
+    return state_dir() / INSTANCE_FILENAME
+
+
+def write_instance(payload: dict) -> None:
+    """Оставить след живого экземпляра, чтобы второй запуск его нашёл.
+
+    Токен из этого файла открывает интерфейс, поэтому права заужены: файл
+    лежит в домашней папке и читать его должен только владелец.
+    """
+    path = instance_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.chmod(path, 0o600)
+    except OSError:
+        # Записать не смогли — работаем без следа. Приложение при этом
+        # запускается, просто второй запуск его не найдёт и скажет об
+        # этом прямо.
+        pass
+
+
+def clear_instance(pid: int | None = None) -> None:
+    """Снять след, но только свой.
+
+    Без проверки pid след стирал любой, кто первым остановится: два
+    запущенных kurator — с разными папками — мешали бы друг другу, и
+    следующий щелчок по значку решил бы, что приложение уже работает, а
+    второго процесса нет. Заодно это делало тесты недетерминированными:
+    сервер из прошлого теста мог снести след текущего.
+    """
+    path = instance_path()
+    if pid is not None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict) or payload.get("pid") != pid:
+            return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def live_instance() -> dict | None:
+    """Есть ли уже работающий kurator и чем его открыть.
+
+    Проверяется не pid, а живой ответ на порту: `os.kill(pid, 0)` на
+    Windows означает `TerminateProcess`, и такая проверка убила бы чужой
+    процесс. Заодно она ничего не скажет, если экземпляр погиб, не сняв
+    след с диска.
+
+    Тело страницы проверяется на `KURATOR_TOKEN`: порт мог занять кто-то
+    ещё, и открывать пользователю чужую страницу нельзя.
+    """
+    try:
+        payload = json.loads(instance_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    url = payload.get("url") if isinstance(payload, dict) else None
+    if not isinstance(url, str) or not url:
+        return None
+
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            # Страница читается целиком: метка с токеном стоит в самом
+            # конце index.html, и при чтении первых 4 КБ её не видно —
+            # поиск молча проваливался, и второй запуск падал на занятом
+            # порту точно так же, как до появления этой проверки.
+            body = response.read(65536).decode("utf-8", "replace")
+    except Exception:
+        return None
+    if "KURATOR_TOKEN" not in body:
+        return None
+    return payload
 
 
 def read_history() -> list[str]:
@@ -79,12 +173,35 @@ BLOCKED_ROOTS = {
     "/sbin", "/System", "/sys", "/usr", "/var",
 }
 
+# На Windows корни томов — `C:\`, `D:\` и так далее. Их тут быть не может:
+# список задан строками, и буквы дисков заранее неизвестны. Ловим на лету.
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]?$")
+
 
 def too_broad(path: Path) -> bool:
     """Корень, где kurator бессмысленно полезет по всей системе."""
-    if str(path) in BLOCKED_ROOTS:
+    raw = str(path)
+    if raw in BLOCKED_ROOTS:
         return True
-    return not any(path.iterdir()) if path.is_dir() else False
+    if _WINDOWS_DRIVE_RE.match(raw):
+        return True
+    # На Windows `Path("/")` — это корень текущего диска, а не корень
+    # файловой системы. Он не проходит ни по списку POSIX-путей, ни под
+    # регулярку выше, и пользователь указал бы kurator на весь диск C:.
+    # Голый разделитель без буквы диска блокируем на всех системах: на
+    # POSIX это и так корень, а на Windows — корень тома.
+    if raw in ("\\", "/", "\\/", "//"):
+        return True
+    # Пути, которых нет, `is_dir` не роняет, а вот `iterdir` на папке,
+    # в которую нельзя войти, — может. Проверка «пустая ли папка» не должна
+    # ронять выбор папки в интерфейсе.
+    try:
+        if not path.is_dir():
+            return False
+        next(iter(path.iterdir()), None)
+        return False
+    except OSError:
+        return True
 
 
 def index_status(path: Path) -> dict | None:
@@ -163,6 +280,29 @@ def candidate_roots() -> list[dict]:
     return out
 
 
+class _Server(ThreadingHTTPServer):
+    """Сервер без обратного DNS-поиска.
+
+    `http.server.HTTPServer.server_bind()` зовёт `socket.getfqdn(host)`,
+    чтобы записать `server_name`. Это обратный DNS-запрос, и на машине с
+    медленным резолвером он висит секундами: сокет уже слушает, но
+    `serve_forever()` ещё не вызван, поэтому приложение выглядит зависшим,
+    а в терминале нет ни слова об ошибке.
+
+    Локальному интерфейсу имя хоста не нужно: он слушает только
+    `127.0.0.1`, и никто не обращается к нему по имени. Поэтому
+    `server_bind` берём из `TCPServer` — без поиска.
+    """
+
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
+
+
 class State:
     def __init__(self, root: Path, model_path: Path) -> None:
         self.model_path = model_path
@@ -172,11 +312,36 @@ class State:
         self.job: dict | None = None
         self.thumbs: OrderedDict[tuple[str, int], bytes] = OrderedDict()
         self._stop = threading.Event()
+        # Сколько вкладок сейчас открыто. Каждая представляется при загрузке
+        # и прощается при закрытии; по этому счётчику сторож понимает, что
+        # приложением больше не пользуются.
+        self._clients = 0
         self.root = root.resolve()
         self.store = Store.open(self.root)
         # Как погасить сервер. Заполняется в serve(): сам сервер туда
         # положить не может, он появляется позже.
         self.stop_server: Callable[[], None] | None = None
+
+    @property
+    def clients(self) -> int:
+        with self.lock:
+            return self._clients
+
+    def add_client(self) -> int:
+        """Вкладка открылась."""
+        with self.lock:
+            self._clients += 1
+            return self._clients
+
+    def drop_client(self) -> int:
+        """Вкладка закрылась. Больше нуля не бывает — иначе счётчик уедет
+        после перезагрузки страницы, где уход и приход могут не совпасть."""
+        with self.lock:
+            self._clients = max(0, self._clients - 1)
+            return self._clients
+
+    def stopping(self) -> bool:
+        return self._stop.is_set()
 
     def request_stop(self) -> None:
         """Попросить сервер завершиться.
@@ -574,6 +739,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json(result)
             return
 
+        if route == "/api/hello":
+            # Вкладка открылась. Без этого счётчика приложение не знает,
+            # что им пользуются, и по простою выключится под открытой
+            # страницей.
+            self._json({"clients": self.state.add_client()})
+            return
+
+        if route == "/api/bye":
+            # Вкладка закрылась. Ставится из браузера через sendBeacon
+            # при уходе со страницы, поэтому ответ никому не нужен.
+            self._json({"clients": self.state.drop_client()})
+            return
+
         if route == "/api/quit":
             # Отвечаем сразу, а гасим сервер чуть позже: иначе ответ
             # не успеет уйти и браузер увидит оборванное соединение
@@ -744,8 +922,62 @@ def default_root() -> tuple[Path, str]:
     return Path.home(), "домашняя папка"
 
 
-def serve(root: Path | None, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+def _idle_watchdog(state: "State", httpd, timeout: float) -> None:
+    """Выключить сервер, если вкладок не осталось.
+
+    Приложение без открытой вкладки — это процесс, который держит модель
+    и индекс в памяти, но ничего не делает. Пользователь закрыл вкладку и
+    ушёл, а процесс остался висеть до следующего запуска, который к тому
+    моменту уже не мог пройти.
+
+    Проверка идёт каждые 5 секунд, само выключение — через `timeout`
+    секунд после последнего ухода вкладки. Пауза нужна для перезагрузки
+    страницы и для переключения между двумя вкладками: обе выглядят как
+    «вкладок нет», но ни одну из них закрывать не хочется.
+    """
+    deadline = None
+    while not state.stopping():
+        if state.clients > 0:
+            deadline = None
+        elif deadline is None:
+            deadline = time.monotonic() + timeout
+        elif time.monotonic() >= deadline:
+            print("\nвкладок не осталось — останавливаюсь")
+            httpd.shutdown()
+            return
+        time.sleep(5)
+
+
+def serve(
+    root: Path | None,
+    host: str = "127.0.0.1",
+    port: int = DEFAULT_PORT,
+    open_browser: bool = True,
+    idle_timeout: float | None = None,
+) -> None:
+    """Поднять локальный интерфейс и держать его, пока он нужен.
+
+    `idle_timeout` — через сколько секунд без вкладки выключаться. Для
+    приложения это осмысленно: закрыл вкладку — значит закончил. Для
+    консоли нет, там сервер запускают руками и им пользуются без вкладки,
+    поэтому по умолчанию значение None.
+
+    Повторный запуск приложения, когда экземпляр уже жив, не поднимает
+    второй сервер, а открывает окно первого. Иначе вышло бы два процесса
+    с двумя копиями модели в памяти — ровно то, на что жаловался
+    пользователь, только сдвоенное.
+    """
     if root is None:
+        # Запуск без папки — это клик по иконке. Папку не передавали,
+        # значит и второй экземпляр пользователю не нужен: он хотел
+        # посмотреть тот, который уже открыт.
+        running = live_instance()
+        if running is not None:
+            print(f"kurator {__version__}")
+            print("уже запущен — открываю его окно")
+            if open_browser:
+                webbrowser.open(running["url"])
+            return
         root, source = default_root()
     else:
         source = "из командной строки"
@@ -756,11 +988,11 @@ def serve(root: Path | None, host: str = "127.0.0.1", port: int = 8765, open_bro
     remember_root(state.root)
 
     handler = type("BoundHandler", (Handler,), {"state": state})
-    httpd = ThreadingHTTPServer((host, port), handler)
-    httpd.daemon_threads = True
+    httpd = _Server((host, port), handler)
     state.stop_server = httpd.shutdown
 
     url = f"http://{host}:{port}/?token={state.token}"
+    write_instance({"url": url, "pid": os.getpid(), "port": port, "root": str(state.root)})
     print(f"kurator {__version__}")
     print(f"корень : {state.root}  ({source})")
     print(f"модель : {model_path} {'(на месте)' if state.embedder_available() else '(нет: только хеши)'}")
@@ -768,11 +1000,21 @@ def serve(root: Path | None, host: str = "127.0.0.1", port: int = 8765, open_bro
     print("Ctrl+C — остановить")
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    watchdog = None
+    if idle_timeout:
+        watchdog = threading.Thread(
+            target=_idle_watchdog,
+            args=(state, httpd, float(idle_timeout)),
+            daemon=True,
+        )
+        watchdog.start()
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nостанавливаюсь")
     finally:
+        clear_instance(os.getpid())
         state.close()
         httpd.server_close()
         print("остановлено")
