@@ -22,6 +22,12 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
+# CI передаёт решение через переменную окружения, а не через аргумент:
+# подстановка в `run:` приходит строкой, а параметр-переключатель строку не
+# принимает. Поэтому флаг дублируется из NO_INSTALLER.
+if ($env:NO_INSTALLER -eq 'true') { $NoInstaller = $true }
+if ($env:NO_INSTALLER -eq 'false') { $NoInstaller = $false }
+
 function Say([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }

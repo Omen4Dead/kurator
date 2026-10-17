@@ -114,10 +114,13 @@ jobs:
 
       - name: Собрать установщик
         shell: pwsh
-        # `-NoInstaller` только на PR: там проверяется бандл, а установщик
-        # собирать незачем. На main и теге он и есть тот файл, который
-        # человек скачивает.
-        run: ./packaging/build-windows.ps1 -NoInstaller:${{ github.event_name == 'pull_request' }}
+        # Флаг через переменную окружения, а не через аргумент. Подстановка
+        # в `run:` превращается в текст, и `-NoInstaller:false` приходит в
+        # PowerShell строкой, а параметр-переключатель строку не принимает:
+        # сборка падала на разборе аргумента, не дойдя до дела.
+        env:
+          NO_INSTALLER: ${{ github.event_name == 'pull_request' }}
+        run: ./packaging/build-windows.ps1
 
       - name: Проверить собранное приложение
         run: uv run python packaging/verify_bundle.py dist/kurator
