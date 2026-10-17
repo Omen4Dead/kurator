@@ -240,7 +240,57 @@ def diagnostics(process: subprocess.Popen) -> str:
         control.shutdown()
         control.server_close()
 
+    lines.extend(_windows_reports(process))
     return "\n".join(f"  {line}" for line in lines)
+
+
+def _windows_reports(process: subprocess.Popen) -> list[str]:
+    """Что Windows думает о зависшем процессе.
+
+    На Windows процесс умеет висеть молча: загрузчик ждёт окна, которого
+    в сессии без рабочего стола нет, и сообщения об этом не печатает ни
+    один. Три прибора отвечают на разные вопросы: съел ли защитник файл,
+    было ли что-то в журнале событий и — главное — работает ли процесс
+    вообще, что видно по времени CPU и по `Responding`.
+    """
+    if os.name != "nt":
+        return []
+
+    def ps(command: str) -> str:
+        try:
+            done = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", command],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            return (done.stdout or done.stderr).strip()
+        except Exception as exc:
+            return f"не отработало: {exc!r}"
+
+    return [
+        "процесс глазами Windows: "
+        + ps(
+            f"$p = Get-Process -Id {process.pid} -ErrorAction SilentlyContinue; "
+            "if (-not $p) { 'процесса нет' } else { "
+            "'CPU=' + [math]::Round($p.CPU, 1) + ' с, потоков=' + $p.Threads.Count "
+            "+ ', отвечает=' + $p.Responding "
+            "+ ', памяти=' + [math]::Round($p.WorkingSet64 / 1MB) + ' МБ' }"
+        ),
+        "съел ли защитник что-нибудь: "
+        + ps(
+            "$d = Get-MpThreatDetection -ErrorAction SilentlyContinue "
+            "| Select-Object -First 3 "
+            "| ForEach-Object { $_.Resources -join ',' }; "
+            "if ($d) { $d -join '; ' } else { 'нет' }"
+        ),
+        "журнал событий: "
+        + ps(
+            "Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2} -MaxEvents 5 "
+            "-ErrorAction SilentlyContinue "
+            "| ForEach-Object { $_.Message.Split([Environment]::NewLine)[0] }"
+        ).replace("\n", " | "),
+    ]
 
 
 def _error_report() -> str:
