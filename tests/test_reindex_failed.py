@@ -84,3 +84,26 @@ def test_known_state_reports_whether_anything_was_computed(tmp_path):
         "пропустит его навсегда"
     )
     store.close()
+
+
+def test_video_is_not_rehashed_on_every_run(tmp_path):
+    """Видео не имеют ни эмбеддинга, ни pHash — и это не причина читать их заново.
+
+    По замыслу у видео только md5. Если считать «обработанным» файл по
+    наличию хеша образа, то шестьсот роликов на живом архиве
+    перечитывались при каждом запуске, и каждый раз считался заново их
+    md5 — целиком по файлу.
+    """
+    store = Store.open(tmp_path)
+    clip = tmp_path / "ролик.mp4"
+    clip.write_bytes("не настоящее видео, но расширение видео".encode())
+
+    index_root(tmp_path, store)
+    second = index_root(tmp_path, store)
+
+    assert second["skipped"] == 1, (
+        "видео перечитывается при каждом индексировании: у него нет ни "
+        "эмбеддинга, ни pHash, и признак обработки никогда не "
+        "устанавливается. Нужен отдельный флажок is_video."
+    )
+    store.close()
