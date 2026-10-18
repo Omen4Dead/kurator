@@ -76,7 +76,17 @@ def index_root(
         except OSError:
             continue
         previous = known.get(rel.casefold())
-        if previous and previous[0] == info.st_size and previous[1] == info.st_mtime:
+        if (
+            previous
+            and previous[0] == info.st_size
+            and previous[1] == info.st_mtime
+            # Файл, по которому ничего не вычислилось, обработанным не
+            # считается. Иначе он застревал навсегда: размер и mtime не
+            # меняются, и каждый следующий `index` объявлял его готовым.
+            # Именно так в индексе осталось 810 `.heic` без эмбеддинга —
+            # уже после того, как kurator их научился читать.
+            and previous[2]
+        ):
             stats["skipped"] += 1
             continue
         pending.append((rel, path))
@@ -212,7 +222,7 @@ def index_paths(root: Path, store: Store, rel_paths: list[str]) -> int:
         encoder=None,
         rehash=False,
         known_override={
-            rel.casefold(): (known[rel.casefold()][0], known[rel.casefold()][1])
+            rel.casefold(): known[rel.casefold()]
             for rel in present
             if rel.casefold() in known
         },

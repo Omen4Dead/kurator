@@ -222,26 +222,59 @@ class Store:
             row = self.conn.execute("SELECT v FROM meta WHERE k=?", (key,)).fetchone()
             return row["v"] if row else default
 
-    def known_state(self) -> dict[str, tuple[int, float]]:
-        """Размер и mtime по каждому файлу, для инкрементальной индексации.
+    def known_state(self) -> dict[str, tuple[int, float, bool]]:
+        """Размер, mtime и признак «обработан» по каждому файлу.
 
         Ключ здесь — регистронезависимый: на Windows и macOS `IMG_1.JPG` и
         `img_1.jpg` это один файл, и при регистрозависимом ключе
         инкрементальная индексация объявляла «не изменился» обоим.
+
+        Третье значение — вычислялось ли по файлу хоть что-нибудь. Без него
+        файл, который не удалось прочитать, застревал навсегда: размер и
+        mtime не меняются, значит инкрементальный проход объявлял его
+        обработанным при каждом запуске. Так в индексе осталось 810 `.heic`
+        без единого эмбеддинга — после того, как kurator их научился
+        читать, обычный `index` так и не посмотрел на них вновь.
+
+        Видео считаются обработанными по флажку: эмбеддинга и pHash у них
+        не бывает по замыслу, и без отдельной оговорки каждый запуск
+        перечитывал бы их заново и пересчитывал md5 целиком — на архиве с
+        шестьюстами роликов это минуты впустую.
         """
         with self.lock:
-            rows = self.conn.execute("SELECT rel_key, rel_path, size, mtime FROM photos").fetchall()
+            rows = self.conn.execute(
+                "SELECT rel_key, rel_path, size, mtime, embed IS NOT NULL AS has_embed, "
+                "phash IS NOT NULL AS has_phash, is_video FROM photos"
+            ).fetchall()
         return {
-            (r["rel_key"] or r["rel_path"]).casefold(): (r["size"], r["mtime"])
+            (r["rel_key"] or r["rel_path"]).casefold(): (
+                r["size"],
+                r["mtime"],
+                bool(r["has_embed"]) or bool(r["has_phash"]) or bool(r["is_video"]),
+            )
             for r in rows
         }
 
     def forget(self, rel_paths: list[str]) -> None:
+        """Убрать из индекса файлы, которых на диске больше нет.
+
+        Ищем по `rel_key`, а не по `rel_path`. Ключи приходят из
+        `known_state` уже свёрнутыми в нижний регистр, а `rel_path` хранит
+        написание как на диске — `Yandex.Disk.localized/Фото/…/IMG.JPG`
+        против `yandex.disk.localized/фото/…/img.jpg`. Поиск по `rel_path` с
+        таким значением не находит ничего, удаление молча ничего не делало,
+        а счётчик в выводе рапортовал об удалённом. Призраки копились в
+        индексе месяцами: 34 строки `.arw` на файлах, которых нет уже давно.
+
+        Второе условие оставлено для вызовов, где приходит исходное
+        написание, — `index_paths` зовёт `forget` прямо из командной строки.
+        """
         if not rel_paths:
             return
         with self.lock:
             self.conn.executemany(
-                "DELETE FROM photos WHERE rel_path=?", ((p,) for p in rel_paths)
+                "DELETE FROM photos WHERE rel_key=? OR rel_path=?",
+                ((p.casefold(), p) for p in rel_paths),
             )
 
     def upsert(self, photo: Photo) -> None:

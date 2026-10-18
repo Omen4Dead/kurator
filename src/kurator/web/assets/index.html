@@ -59,6 +59,8 @@
       сбросить</button>
     <span class="params-note">Оба меняют строгость,
       но в разные стороны</span>
+    <span class="params-note reindex-note" id="reindexnote">
+      Переиндексация не нужна: меняются только находки</span>
   </div>
   <span class="spacer"></span>
   <button id="btn-unskip" class="ghost">Вернуть пропущенные</button>
@@ -118,8 +120,10 @@
   <h2>Корзина <span class="badge" id="trash-badge">0</span></h2>
   <p class="muted">
     Здесь то, что уже перенесено в <code>.kurator/quarantine/</code>.
-    <strong class="warn">Удаление отсюда необратимо:</strong> файл исчезнет с диска, откатить будет нечем.
-    Если сомневаетесь — закройте окно и верните файлы из карантина.
+    Отметьте нужные файлы и верните их на прежние места —
+    <strong>ничего не удаляется, файлы просто едут обратно.</strong>
+    А вот <strong class="warn">удаление отсюда необратимо:</strong>
+    файл исчезнет с диска, откатить будет нечем.
   </p>
   <div class="trashbar">
     <button id="trash-all" class="ghost">Выбрать все</button>
@@ -130,6 +134,7 @@
   <div class="dialog-actions">
     <button id="trash-cancel" class="ghost">Закрыть</button>
     <button id="trash-wipe" class="danger">Удалить всё</button>
+    <button id="trash-restore" disabled>Вернуть выбранные</button>
     <button id="trash-confirm" class="danger" disabled>Удалить выбранные</button>
   </div>
 </dialog>

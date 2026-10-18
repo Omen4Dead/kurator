@@ -7,13 +7,15 @@ const state = {
   // поэтому дефолт должен совпадать с ней, иначе интерфейс включается
   // на пустой третьей вкладке.
   tab: "near-strong",
-  factory: { phash: 10, cosine: 0.9 },
+  // Заводские пороги приходят из /api/state. Зашивать их здесь нельзя:
+  // страница переживает смену версии, и зашитое число рано или поздно
+  // становится ложью — кнопка «сбросить» молча вернёт прежние значения.
+  factory: null,
   skipped: {},
   groups: [],
   clusters: [],
   root: "",
   selected: new Map(),
-  strips: [],
   jobTimer: null,
 };
 
@@ -53,6 +55,18 @@ function showFarewell() {
 function whenRu(stamp) {
   return new Date(stamp * 1000).toLocaleString("ru-RU",
     { dateStyle: "short", timeStyle: "short" });
+}
+
+// Русские числительные: 1 группа, 2 группы, 5 групп. Существовавший раньше
+// вид «файла(ов)» годится для таблиц, но в обычной фразе он читается как
+// каша, поэтому для новых надписей здесь честные склонения.
+function plural(n, one, few, many) {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
 }
 
 function fmtBytes(n) {
@@ -203,17 +217,6 @@ function skipStrip(group, createdAt) {
   </div>`;
 }
 
-function stripCard(strip) {
-  return `<div class="card moved" data-run="${strip.run_id}">
-    <div class="strip">
-      <span class="stripdone">перенесено в карантин</span>
-      <span class="striptitle">${escapeHtml(strip.title)}</span>
-      <span class="stripmeta">${strip.paths.length} файл(ов) · ${fmtBytes(strip.bytes)}</span>
-      <button class="ghost" data-role="restore" data-run="${strip.run_id}">Вернуть</button>
-    </div>
-  </div>`;
-}
-
 async function refreshSituation() {
   const data = await api("/api/state");
   const map = {};
@@ -222,28 +225,6 @@ async function refreshSituation() {
   const count = Object.keys(map).length;
   $("btn-unskip").hidden = !count;
   $("btn-unskip").textContent = `Вернуть все скрытые (${count})`;
-}
-
-async function loadStrips() {
-  try {
-    const { runs } = await api("/api/runs");
-    const files = runs.reduce((sum, r) => sum + r.paths.length, 0);
-    state.trashFiles = files;
-    $("btn-undo").hidden = !runs.length;
-    $("btn-undo").textContent = files
-      ? `Вернуть из карантина (${files})` : "Вернуть из карантина";
-    state.strips = runs
-      .filter((r) => r.kind === "by-hand" && r.paths.length)
-      .map((r) => ({
-        run_id: r.run_id,
-        paths: r.paths,
-        title: r.paths[0].split("/").pop(),
-        bytes: r.bytes || 0,
-      }));
-  } catch (err) {
-    state.strips = [];
-    $("btn-undo").hidden = true;
-  }
 }
 
 function groupCard(group, index) {
@@ -272,15 +253,12 @@ function groupCard(group, index) {
 function render() {
   const main = $("main");
   const hidden = state.skipped || {};
-  const stripHtml = state.strips.map(stripCard).join("");
-  const top = stripHtml ? `<div class="strips">${stripHtml}</div>` : "";
-
   if (state.tab === "clusters") {
     if (!state.clusters.length) {
-      main.innerHTML = top + `<p class="empty">Кластеров нет. Понизь порог cosine или проиндексируй больше.</p>`;
+      main.innerHTML = `<p class="empty">Кластеров нет. Понизь порог cosine или проиндексируй больше.</p>`;
       return;
     }
-    main.innerHTML = top + state.clusters.map((cluster, i) => `<div class="card">
+    main.innerHTML = state.clusters.map((cluster, i) => `<div class="card">
         <h3>${i + 1}. кластер <span class="badge">${cluster.size} файла(ов)</span></h3>
         <p class="meta">${escapeHtml(cluster.members[0].split("/").slice(0, -1).join("/"))}</p>
         <div class="grid">${cluster.members.map((m) =>
@@ -292,20 +270,33 @@ function render() {
 
   const groups = state.groups.filter((g) => g.kind === state.tab);
   if (!groups.length) {
-    main.innerHTML = top + `<p class="empty">Здесь пусто. Проверь индекс или открой другую вкладку.</p>`;
+    main.innerHTML = `<p class="empty">Здесь пусто. Проверь индекс или открой другую вкладку.</p>`;
     return;
   }
-  const total = groups.reduce((sum, g) =>
+  // Пропущенные группы остаются в списке полосой, но в счёт не идут:
+  // нажать на них уже нельзя, и называть их «группами» значит обещать
+  // работу, которой не будет. Размер тоже считается только по тем, что
+  // в работе, — отметки пропущенной группы остаются в памяти, но
+  // недостижимы, и раньше из-за этого «отмечено на» показывало лишнее.
+  const isHidden = (g) => hidden[groupKeyOf(g)] !== undefined;
+  const live = groups.filter((g) => !isHidden(g));
+  const putAside = groups.length - live.length;
+  const total = live.reduce((sum, g) =>
     sum + g.files.filter((f) => isSelected(g).includes(f.path)).reduce((s, f) => s + f.size, 0), 0);
   const cards = groups.map((g, i) => {
     const sig = groupKeyOf(g);
     return hidden[sig] !== undefined ? skipStrip(g, hidden[sig]) : groupCard(g, i);
   });
-  main.innerHTML = top +
-    `<p class="meta">${groups.length} групп · отмечено на ${fmtBytes(total)}.
-    Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить
-    другой кадр вместо отмеченного, снимите ✓ здесь и поставьте там.</p>` +
-    cards.join("");
+  const headline = live.length
+    ? `${live.length} ${plural(live.length, "группа", "группы", "групп")} в работе` +
+      (putAside ? `, ещё ${putAside} ${plural(putAside, "оставлена", "оставлены", "оставлено")} как есть` : "") +
+      ` · отмечено на ${fmtBytes(total)}`
+    : `Все ${groups.length} ${plural(groups.length, "группа", "группы", "групп")} оставлены как есть`;
+  // Пояснение про рамки имеет смысл, только когда есть что выбирать.
+  const howto = live.length
+    ? ` Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить
+    другой кадр вместо отмеченного, снимите ✓ здесь и поставьте там.` : "";
+  main.innerHTML = `<p class="meta">${headline}.${howto}</p>` + cards.join("");
 }
 
 function findGroupByKey(key) {
@@ -342,12 +333,11 @@ async function decide(paths, action, sig) {
       return;
     }
     if (action === "remove") {
-      toast(`перенесено ${result.moved ?? 0}. Полоса с кнопкой «Вернуть» — сверху.`);
+      toast(`перенесено ${result.moved ?? 0}. Вернуть можно в корзине.`);
     } else {
       toast(`пропущено ${result.skipped ?? 0}`);
     }
     await loadState();
-    await loadStrips();
     await loadTrashCount();
     await refreshSituation();
     await loadFindings();
@@ -370,29 +360,11 @@ async function unskipGroup(sig) {
   }
 }
 
-async function restoreRun(runId) {
-  try {
-    const result = await api("/api/restore", {
-      method: "POST", body: JSON.stringify({ run_id: Number(runId) }),
-    });
-    state.strips = state.strips.filter((s) => String(s.run_id) !== String(runId));
-    toast(result.message ? result.message : `возвращено ${result.moved ?? 0}`);
-    await loadState();
-    await loadStrips();
-    await loadTrashCount();
-    await refreshSituation();
-    await loadFindings();
-  } catch (err) {
-    toast(err.message, true);
-  }
-}
-
 document.addEventListener("click", (event) => {
   const node = event.target.closest("[data-role]");
   if (!node) return;
-  const { role, key, path, run, sig } = node.dataset;
+  const { role, key, path, sig } = node.dataset;
 
-  if (role === "restore") { restoreRun(run); return; }
   if (role === "unskip") { unskipGroup(sig); return; }
 
   const group = findGroupByKey(key);
@@ -495,6 +467,10 @@ async function saveTuning() {
       method: "POST",
       body: JSON.stringify({ phash: +$("phash").value, cosine: +$("cosine").value }),
     });
+    // Пороги не участвуют в индексации: пересчитались находки, а база
+    // осталась нетронутой. Без этой подсказки человек после смены порога
+    // разумно жмёт «пересчитать всё заново» и платит за это минутами.
+    toast("пороги применены — переиндексация не нужна");
   } catch (err) {
     toast(err.message, true);
   }
@@ -527,6 +503,10 @@ $("btn-report").onclick = async () => {
 };
 
 $("btn-factory").onclick = async () => {
+  if (!state.factory) {
+    toast("заводские значения ещё не загрузились, попробуйте через мгновение", true);
+    return;
+  }
   const { phash, cosine } = state.factory;
   const nowP = $("phash").value;
   const nowC = $("cosine").value;
@@ -576,7 +556,6 @@ $("btn-undo").onclick = async () => {
     const result = await api("/api/undo", { method: "POST", body: "{}" });
     toast(result.message ? result.message : `возвращено ${result.moved}`);
     await loadState();
-    await loadStrips();
     await loadTrashCount();
     await loadFindings();
   } catch (err) {
@@ -610,7 +589,7 @@ window.addEventListener("pageshow", announceOpen);
 announceOpen();
 
 loadState()
-  .then(() => Promise.all([loadFindings(), loadStrips(), refreshSituation(), loadTrashCount()]))
+  .then(() => Promise.all([loadFindings(), loadTrashCount(), refreshSituation()]))
   .then(() => render())
   .catch((err) => {
     // Открытая вкладка после выхода или после аварии сервера:
@@ -636,9 +615,12 @@ function renderTrash() {
     const note = item.junk
       ? `<div class="orphan">служебный файл macOS, не фотография</div>`
       : item.orphan
-      ? `<div class="orphan">без манифеста — откатить нечем</div>` : "";
+      ? `<div class="orphan">без манифеста — вернуть нечем</div>` : "";
+    // Отметить файл без манифеста нельзя: вернуть его нечем, и галочка
+    // была бы обещанием, которое интерфейс не сможет выполнить.
+    const locked = item.orphan ? " disabled" : "";
     return `<li class="trashitem">
-      <input type="checkbox" data-trash="${escapeHtml(item.key)}"${checked}>
+      <input type="checkbox" data-trash="${escapeHtml(item.key)}"${checked}${locked}>
       <img src="${thumb(item.to_path)}" loading="lazy" alt="">
       <div class="trashbody">
         <div class="trashname">${escapeHtml(item.to_path.split("/").pop())}</div>
@@ -653,6 +635,21 @@ function renderTrash() {
   $("trash-confirm").disabled = !n;
   $("trash-confirm").textContent = n ? `Удалить выбранные (${n})` : "Удалить выбранные";
   $("trash-wipe").disabled = !box.items.length;
+
+  // Вернуть можно не всё: у файла без манифеста нет адреса, откуда он
+  // пришёл. Такую галочку не отмечаем и молча не считаем, иначе кнопка
+  // обещала бы вернуть то, чего вернуть нечем.
+  const restorable = box.items.filter((i) => !i.orphan);
+  const restorableKeys = new Set(restorable.map((i) => i.key));
+  const restorableChosen = [...box.chosen].filter((k) => restorableKeys.has(k)).length;
+  const restore = $("trash-restore");
+  restore.disabled = !restorableChosen;
+  restore.textContent = restorableChosen
+    ? `Вернуть выбранные (${restorableChosen})`
+    : "Вернуть выбранные";
+  restore.title = restorableChosen < n
+    ? "Часть отмеченных вернуть нельзя: манифест потерян"
+    : "";
 
   const armed = box.armed;
   $("trash-confirm").classList.toggle("armed", armed === "chosen");
@@ -699,27 +696,74 @@ async function runTrashDelete(mode) {
     state.trash = { items: data.items, chosen: new Set(), armed: null };
     renderTrash();
     if (!data.items.length) $("trash").close();
-    await loadStrips();
+    await loadTrashCount();
   } catch (err) {
     toast(err.message, true);
   }
 }
 
+async function runTrashRestore() {
+  const box = state.trash;
+  const restorable = new Set(box.items.filter((i) => !i.orphan).map((i) => i.key));
+  const keys = [...box.chosen].filter((k) => restorable.has(k));
+  if (!keys.length) { toast("нечего возвращать", true); return; }
+  try {
+    const result = await api("/api/trash/restore", {
+      method: "POST",
+      body: JSON.stringify({ keys }),
+    });
+    const problems = (result.failed || []).length + (result.orphans || []).length;
+    if (problems) {
+      toast(
+        `возвращено ${result.restored}, не вышло ${problems}` +
+          (result.failed && result.failed[0]
+            ? ` — «${result.failed[0].error}»`
+            : ""),
+        true,
+      );
+    } else {
+      toast(`возвращено на место ${result.restored} (${fmtBytes(result.bytes || 0)})`);
+    }
+    box.armed = null;
+    const data = await api("/api/trash");
+    state.trash = { items: data.items, chosen: new Set(), armed: null };
+    renderTrash();
+    if (!data.items.length) $("trash").close();
+    await loadTrashCount();
+    await loadFindings();
+    await loadState();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+$("trash-restore").onclick = runTrashRestore;
+
 async function loadTrashCount() {
+  // Оба счётчика — и у кнопки отката, и у кнопки корзины — берутся
+  // из одного места. Раньше откат считал по `/api/runs`, где стоит
+  // предел в двадцать переносов, и при большем количестве переносов
+  // показывалось число меньше настоящего: часть переносов молча
+  // исчезала из интерфейса вместе с возможностью их откатить.
   try {
     const data = await api("/api/trash");
     $("btn-trash").hidden = !data.count;
     $("btn-trash").textContent = data.count
       ? `Корзина (${data.count})` : "Корзина";
+    $("btn-undo").hidden = !data.count;
+    $("btn-undo").textContent = data.count
+      ? `Вернуть из карантина (${data.count})` : "Вернуть из карантина";
+    state.trashFiles = data.count;
   } catch {
     $("btn-trash").hidden = true;
+    $("btn-undo").hidden = true;
   }
 }
 
 $("btn-trash").onclick = openTrash;
 $("trash-cancel").onclick = () => { state.trash.armed = null; $("trash").close(); };
 $("trash-all").onclick = () => {
-  state.trash.chosen = new Set(state.trash.items.map((i) => i.key));
+  state.trash.chosen = new Set(state.trash.items.filter((i) => !i.orphan).map((i) => i.key));
   state.trash.armed = null;
   renderTrash();
 };
