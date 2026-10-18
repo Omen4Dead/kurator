@@ -9,7 +9,7 @@
 ; тут нечего менять.
 
 #define AppName "kurator"
-#define AppVersion "0.2.0"
+#define AppVersion "0.3.0"
 #define AppPublisher "Omen4Dead"
 #define AppURL "https://github.com/Omen4Dead/kurator"
 #define AppExeName "kurator.exe"

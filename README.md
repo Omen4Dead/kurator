@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/Omen4Dead/kurator/releases/latest">
-    <img src="https://img.shields.io/badge/скачать-kurator--0.2.0-E8590C?style=for-the-badge" alt="Скачать kurator 0.2.0">
+    <img src="https://img.shields.io/badge/скачать-kurator--0.3.0-E8590C?style=for-the-badge" alt="Скачать kurator 0.3.0">
   </a>
 </p>
 
@@ -29,6 +29,16 @@
   похож на её центроид.
 - **Отчёт** — markdown, html и контакт-листы с превью, где оставляемый кадр
   обведён и подписан «оставляю».
+
+**Форматы.** JPEG, PNG, WebP, TIFF, BMP, GIF, **HEIC/HEIF и AVIF** (снимки с
+айфона и Android), JPEG 2000, PCX, TGA, JFIF — и сырые камеры: CR2, NEF,
+ARW, ORF, RW2, DNG, PEF, SRW, ERF. Всего 35 расширений, и список не
+расходится с тем, что действительно читается: это проверяется тестом и
+собранным приложением, а не обещанием.
+
+Не читаются RAF (Fujifilm) и X3F (Sigma) — это не TIFF-контейнеры и Pillow
+их не открывает. Их нет в списке намеренно: поддержка, которая выглядит
+включённой и молча пропускает файлы, хуже её отсутствия.
 
 ## Чего он не делает
 

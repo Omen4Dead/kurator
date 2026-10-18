@@ -1,6 +1,6 @@
 [project]
 name = "kurator"
-version = "0.2.0"
+version = "0.3.0"
 description = "Офлайновый разбор фотографий: дубликаты, near-dupes, визуальные кластеры. Без облака."
 readme = "README.md"
 requires-python = ">=3.11"
