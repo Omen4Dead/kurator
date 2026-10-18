@@ -15,15 +15,19 @@
 #define AppExeName "kurator.exe"
 
 [Setup]
-AppId={{7B3E9F21-4C8D-4A16-9E5B-2D7F1C0A8834}
+AppId={7B3E9F21-4C8D-4A16-9E5B-2D7F1C0A8834}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}
 
-; Куда ставить по умолчанию. С Program Files приложение не пишет само
-; ничего, поэтому ставить можно без прав администратора.
+; Куда ставить по умолчанию. `{autopf}` — это «Программы», а туда без
+; прав администратора не попасть, поэтому установщик их запрашивает
+; (PrivilegesRequired в Inno Setup по умолчанию admin, и здесь он не
+; переопределён). Раньше здесь стояло обоснование, что приложение ничего
+; не пишет в свою папку и потому права не нужны: это верно про само
+; приложение и неверно про установку.
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
