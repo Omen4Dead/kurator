@@ -160,16 +160,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           echo "прикладываю к релизу $TAG"
           ls -la dist/
 
+          # Репозиторий передаётся явно. Джоб ничего не клонирует, а `gh`
+          # иначе пытается определить репозиторий по git-remote и падает с
+          # «not a git repository». Хуже всего, что происходит это внутри
+          # `if !`: ошибка подавляется, и видно её только на следующей
+          # команде — то есть в другом месте и с другим текстом.
+          #
           # Релиз может быть создан вручную заранее или не существовать
           # вовсе. Создаём недостающий, а существующий не трогаем: в нём
           # могут быть написанные вручную заметки.
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "kurator $TAG" --generate-notes
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" \
+              --title "kurator $TAG" --generate-notes
           fi
-          gh release upload "$TAG" dist/* --clobber
-          echo "готово: https://github.com/${{ github.repository }}/releases/tag/$TAG"
+          gh release upload "$TAG" dist/* --repo "$REPO" --clobber
+          echo "готово: https://github.com/$REPO/releases/tag/$TAG"
