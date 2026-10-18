@@ -7,7 +7,7 @@ import io
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import ExifTags, Image, ImageOps
 
 from .config import INPUT_SIZE, SIGLIP_MEAN, SIGLIP_STD
 from .hashing import DCT_SIZE, DHASH_H, DHASH_W, dhash, phash
@@ -20,6 +20,14 @@ class BadImage(Exception):
 
 
 def _register_heif() -> None:
+    """Включить чтение HEIF/AVIF.
+
+    Регистрация делается один раз при импорте и молча пропускается, если
+    библиотека не встала: kurator не должен отказываться запускаться
+    из-за формата, которого у пользователя может и не быть. Ценой такой
+    осторожности будет то, что снимки с айфона не читаются, — и ловит
+    это тест в `tests/test_formats.py`, а не сам kurator.
+    """
     try:
         import pillow_heif
     except ImportError:
@@ -45,9 +53,24 @@ def _exif_from(img: Image.Image) -> dict:
         "taken_at": None,
         "orientation": int(exif.get(274, 1) or 1),
     }
-    dt_orig = exif.get(36867)
-    dt_dig = exif.get(36868)
-    out["taken_at"] = _parse_exif_date(dt_orig) or _parse_exif_date(dt_dig)
+    # Дата съёмки лежит в под-IFD Exif, а Pillow заходит туда сам только
+    # для JPEG. Для HEIF не заходит: у файла с айфона в верхнем уровне
+    # есть Make и Model, а DateTimeOriginal — нет, и снимок получал дату
+    # по времени копирования файла вместо времени съёмки. На
+    # синхронизируемом архиве это время не значит ничего, а от него
+    # зависят burst-серии и порядок в отчёте.
+    try:
+        sub = exif.get_ifd(ExifTags.IFD.Exif)
+    except Exception:
+        sub = {}
+    dt_orig = exif.get(36867) or sub.get(36867)
+    dt_dig = exif.get(36868) or sub.get(36868)
+    # 306 — DateTime в главном IFD; часть камер пишет дату только туда.
+    out["taken_at"] = (
+        _parse_exif_date(dt_orig)
+        or _parse_exif_date(dt_dig)
+        or _parse_exif_date(exif.get(306))
+    )
     return out
 
 

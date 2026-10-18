@@ -51,11 +51,18 @@ def fail(message: str) -> None:
 
 
 def make_archive(root: Path) -> Path:
-    """Архив с вложенной папкой и точным дубликатом.
+    """Архив с вложенной папкой, точным дубликатом и нестандартными форматами.
 
     Имена с пробелом и кириллицей — не украшение: разделитель пути в
     собранном приложении на Windows обязан оставаться прямым, а имена
     показываться как на диске. Проверяется именно этим деревом.
+
+    HEIC и AVIF добавлены не для разнообразия. libheif — нативная
+    библиотека, и ничто не мешает PyInstaller её не увезти: приложение
+    запустится, страница отдастся, эмбеддинги для JPEG посчитаются, а
+    снимки с айфона молча уйдут в «нечитаемые», и проверка будет
+    зелёной. Единственный способ это поймать — открыть такой файл
+    собранным приложением.
     """
     album = root / "Photos from 2024" / "Отпуск"
     album.mkdir(parents=True, exist_ok=True)
@@ -69,7 +76,32 @@ def make_archive(root: Path) -> Path:
     # Точный дубликат: без него карантин нечего проверять.
     shutil.copyfile(source, album / "IMG_0001 (1).png")
 
+    # Форматы, которые читает не сам Pillow, а подключённая библиотека.
+    _write_sample(source, album / "IMG_0002.heic", "HEIF")
+    _write_sample(source, album / "IMG_0003.avif", "AVIF")
+
     return first
+
+
+def _write_sample(source: Path, target: Path, fmt: str) -> None:
+    """Переписать исходную картинку в формат, который kurator обещает."""
+    from PIL import Image, features
+
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+    except ImportError:
+        fail(
+            "в проверяющем окружении нет pillow-heif, а проверка обязана "
+            "создать настоящий файл этого формата"
+        )
+
+    if fmt == "AVIF" and not features.check("avif"):
+        fail("Pillow в проверяющем окружении не умеет писать AVIF")
+
+    with Image.open(source) as img:
+        img.convert("RGB").save(target, format=fmt)
 
 
 def _app_output(process: subprocess.Popen) -> str:
@@ -468,12 +500,17 @@ def main() -> None:
         embedded = snapshot.get("embedded", 0)
         print(f"  проиндексировано файлов: {files}, эмбеддингов: {embedded}")
 
-        if files < 2:
-            fail(f"приложение увидело {files} файлов вместо двух — обход папок сломан")
-        if embedded < 2:
+        if files < 4:
+            fail(f"приложение увидело {files} файлов вместо четырёх — обход папок сломан")
+        if embedded != files:
+            # Ровно этот случай тут и ловится: файлы HEIC и AVIF будут
+            # посчитаны, но останутся без эмбеддинга, если libheif не
+            # уехала в бандл. Приложение при этом выглядит исправным.
             fail(
-                f"эмбеддингов {embedded}, ожидалось 2 — модель отработала не полностью. "
-                "Почти всегда это onnxruntime, который не уехал в бандл целиком."
+                f"эмбеддингов {embedded} при {files} файлах — не все форматы прочитаны. "
+                "Почти всегда это нативная библиотека, которая не уехала в бандл: "
+                "без неё снимки молча попадают в «нечитаемые». "
+                f"Подробности: {snapshot.get('skipped')}"
             )
 
         # 4. Имена файлов: обратные слэши в интерфейсе означают, что

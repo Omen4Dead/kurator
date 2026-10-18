@@ -277,6 +277,44 @@ def test_windows_build_verifies_the_bundle():
     assert "verify_bundle.py" in workflow, "macOS-сборка не проверяет бандл"
 
 
+def test_runtime_stays_without_web_frameworks():
+    """Правило «число зависимостей не ограничено, смысл — да» с границами.
+
+    Отмена правила трёх зависимостей не означает «добавляйте что хочется».
+    Границы объявлены в `AGENTS.md`: нельзя то, что делается стандартной
+    библиотекой, и нельзя то, что тянет веб-сервер, ORM, CLI-фреймворк
+    или свой формат данных. Веб-интерфейс остаётся тремя статическими
+    файлами и `ThreadingHTTPServer`.
+
+    Проверка дешёвая и ловит именно то, что тихо протаскивают: в
+    зависимости попадает фреймворк «на будущее».
+    """
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    runtime = {
+        d.split(">")[0].split("=")[0].split("[")[0].strip().lower()
+        for d in pyproject["project"]["dependencies"]
+    }
+
+    forbidden = {
+        "flask", "fastapi", "django", "starlette", "uvicorn", "gunicorn",
+        "tornado", "quart", "litestar", "aiohttp", "requests", "httpx",
+        "sqlalchemy", "alembic", "pydantic",
+        "click", "typer", "rich",
+    }
+    smuggled = sorted(runtime & forbidden)
+    assert not smuggled, (
+        "в рантайм-зависимостях появились пакеты, которые правило запрещает: "
+        f"{', '.join(smuggled)}. Читать форматы — да, тянуть фреймворк — нет."
+    )
+
+    # Заявленная причина отсутствия фреймворка должна оставаться правдой:
+    # сервер слушает только петлю, и интерфейс — статические файлы.
+    server = (ROOT / "src" / "kurator" / "web" / "server.py").read_text(encoding="utf-8")
+    assert "ThreadingHTTPServer" in server, "веб-сервер перестал быть стандартным"
+
+
 def test_runtime_has_no_subprocess_after_all():
     """Сетевого и внешнего кода в рантайме быть не должно.
 

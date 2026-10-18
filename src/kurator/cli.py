@@ -286,6 +286,20 @@ def cmd_evaluate(args) -> int:
     print(f"корень: {root}")
     print(f"размечено файлов: {stats['scored']} "
           f"(оригиналов {stats['orig']}, exact {stats['exact']}, near {stats['near']}, burst {stats['burst']})")
+
+    # Пустой индекс даёт шесть строк по 1.000, и выглядит это как
+    # идеальный результат. На деле не проверен ни один файл.
+    # `evaluate` не индексирует сам, так что получается это ровно при
+    # забытом `kurator index` — и заметить трудно: цифры красивые.
+    if stats["scored"] == 0:
+        print(
+            "\nПРОВАЛ: в индексе нет ни одного размеченного файла, "
+            "метрики ничего не проверяли.\n"
+            f"  сначала проиндексируй: kurator index {root}"
+        )
+        store.close()
+        return 1
+
     print()
     print(f"{'метрика':<52} {'TP':>4} {'FP':>4} {'FN':>4} {'prec':>7} {'recall':>7} {'F1':>7}")
     for metric in result["metrics"]:
