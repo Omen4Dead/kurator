@@ -171,6 +171,28 @@ def test_icon_is_rebuilt_before_windows_build():
     )
 
 
+def test_strip_is_off_on_windows():
+    """`strip` на Windows ломает бандл, и чинится это одной строкой.
+
+    PyInstaller на Windows зовёт `strip` из PATH — там находится GNU
+    strip — и применяет его к каждому бинарнику в `_internal`, включая
+    `python313.dll`. Приложение падало с кодом -1 и сообщением
+    `Failed to load Python DLL ... LoadLibrary: Invalid access to memory
+    location`: бинарник оказывался испорченным до запуска Python.
+
+    На macOS вызов правильный (`strip -S`), и там он нужен, поэтому
+    проверка не запрещает его вовсе, а требует явного `IS_MACOS`.
+    """
+    spec = (ROOT / "packaging" / "kurator.spec").read_text(encoding="utf-8")
+    assert "strip=IS_MACOS" in spec, (
+        "strip должен быть включён только на macOS. На Windows он портит "
+        "бинарники в бандле, и приложение не запускается вовсе."
+    )
+    assert "strip=True" not in spec, (
+        "strip=True включает его и на Windows, где он ломает бандл"
+    )
+
+
 def test_windows_build_verifies_the_bundle():
     """Сборка обязана проверять бандл, а не только создавать файл.
 
