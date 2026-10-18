@@ -88,8 +88,6 @@ main { padding:18px 24px 60px; }
   cursor:pointer; font:inherit; padding:0; width:22px; height:22px; font-size:13px; }
 .tile .pick:hover { border-color:var(--accent); }
 .tile.picked .pick { color:var(--fg); background:var(--drop); border-color:var(--drop); }
-.strips { display:flex; flex-direction:column; gap:6px; margin-bottom:18px; }
-.card.moved { background:#1b1b1f; border-color:#3a3a42; padding:0; }
 .card.skipped { background:#1b1b1f; border-color:#3a3a42; padding:0; }
 .card.skipped .stripdone { color:#a1a1aa; }
 .strip { display:flex; align-items:center; gap:12px; padding:9px 14px; }
@@ -120,6 +118,11 @@ dialog h2 { margin:0 0 6px; font-size:18px; }
 #plan-list { max-height:45vh; overflow:auto; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   font-size:12px; background:#101013; border-radius:8px; padding:10px 12px; margin:12px 0; }
 .dialog-actions { display:flex; justify-content:flex-end; gap:10px; }
+/* Возврат в корзине — безопасное действие, удаление опасное. Кнопки
+   стоят рядом, и различаться должны не только цветом: глазом по
+   порядку «отмена, вернуть, удалить» их и различает. */
+#trash-restore:not(:disabled) { border-color:#3f7d3f; color:#8fd08f; }
+#trash-restore:not(:disabled):hover { background:#16221a; }
 #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
   background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 16px;
   opacity:0; pointer-events:none; transition:opacity .2s; max-width:80vw; }

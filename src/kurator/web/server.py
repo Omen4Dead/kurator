@@ -765,6 +765,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json(result)
             return
 
+        if route == "/api/trash/restore":
+            # Возврат ничего не разрушает: файл просто едет обратно, и если
+            # что-то пойдёт не так, он останется в корзине. Поэтому
+            # подтверждения здесь, в отличие от удаления, не требуется.
+            from ..quarantine import restore_paths
+
+            keys = body.get("keys") or []
+            if not isinstance(keys, list) or not keys:
+                self._json({"error": "не выбрано ни одного файла"}, 400)
+                return
+            result = restore_paths(self.state.store, [str(k) for k in keys])
+            self._json(result)
+            return
+
         if route == "/api/hello":
             # Вкладка открылась. Без этого счётчика приложение не знает,
             # что им пользуются, и по простою выключится под открытой

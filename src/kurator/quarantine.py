@@ -534,10 +534,13 @@ def delete_trash(store: Store, keys: list[str]) -> dict:
             continue
         payload["moves"] = left
         payload["count"] = len(left)
+        # Размер берётся по `to`, а не по `from`: файл лежит в карантине
+        # под адресом `to`, а по адресу `from` его уже нет. Сумма по
+        # `from` выходила всегда нулевой, и перенос показывал 0 байт.
         payload["bytes"] = sum(
-            (root / m["from"]).stat().st_size
+            (root / unflatten(m["to"])).stat().st_size
             for m in left
-            if (root / m["from"]).is_file()
+            if (root / unflatten(m["to"])).is_file()
         )
         try:
             manifest.write_text(
@@ -553,3 +556,115 @@ def delete_trash(store: Store, keys: list[str]) -> dict:
     prune_stale_manifests(store)
     store.commit()
     return {"deleted": len(deleted), "bytes": freed, "failed": failed}
+
+
+def restore_paths(store: Store, keys: list[str]) -> dict:
+    """Вернуть выбранные файлы из карантина на прежние места.
+
+    Откат поштучный, а не по переносу. `undo_run` возвращает перенос
+    целиком, а в корзине человек отмечает файлы галочками и ждёт,
+    что вернётся именно отмеченное, — как в настоящей корзине
+    операционной системы.
+
+    Адрес откуда лежит в манифесте, и он же является ключом в
+    `list_trash`. Файлы без манифеста вернуть нечем: они попадают в
+    корзину как «сироты» и отмечаются недоступными для отката.
+    """
+    root = store.root
+    base = quarantine_root(root)
+    wanted = {k for k in keys if isinstance(k, str) and k}
+    if not wanted:
+        return {"restored": 0, "bytes": 0, "failed": [], "orphans": []}
+
+    # Адресная книга: ключ (путь в карантине) -> перенос и его манифест.
+    # Без неё пришлось бы открывать каждый манифест на каждый файл,
+    # а переносы бывают и на тысячи файлов.
+    index: dict[str, tuple[sqlite3.Row, Path, dict]] = {}
+    for row in store.query("SELECT * FROM runs"):
+        manifest = _resolve_manifest(store, row)
+        payload = _load_manifest(manifest)
+        if payload is None:
+            continue
+        for entry in payload.get("moves", []):
+            key = entry.get("to", "")
+            if key in wanted:
+                index[key] = (row, manifest, entry)
+
+    restored: list[str] = []
+    back_to: list[str] = []
+    failed: list[dict] = []
+    orphans: list[str] = []
+    freed = 0
+
+    for key in sorted(wanted):
+        found = index.get(key)
+        if found is None:
+            orphans.append(key)
+            continue
+        _row, _manifest, entry = found
+        src = root / key
+        dst = root / unflatten(entry["from"])
+        if not src.is_file():
+            failed.append({"key": key, "error": "файла уже нет"})
+            continue
+        if dst.exists():
+            # Прежнее место занято: затирать его молча нельзя, файл
+            # остаётся в корзине, а человеку сообщается почему.
+            failed.append({"key": key, "error": "на прежнем месте уже есть файл"})
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            freed += src.stat().st_size
+            _move_file(src, dst)
+        except OSError as exc:
+            failed.append({"key": key, "error": str(exc)})
+            continue
+        restored.append(key)
+        # В индекс возвращается исходный адрес, а не тот, по которому файл
+        # лежал в корзине: в базе хранятся пути внутри архива.
+        back_to.append(entry["from"])
+
+    if restored:
+        back = set(restored)
+        for row in store.query("SELECT id, manifest FROM runs"):
+            manifest = Path(row["manifest"])
+            payload = _load_manifest(manifest)
+            if payload is None:
+                continue
+            moves = payload.get("moves", [])
+            left = [m for m in moves if m.get("to") not in back]
+            if len(left) == len(moves):
+                continue
+            if not left:
+                try:
+                    manifest.unlink()
+                except OSError:
+                    pass
+                store.delete_run(int(row["id"]))
+                continue
+            payload["moves"] = left
+            payload["count"] = len(left)
+            # Размер берётся по `to`, а не по `from`: вернувшийся файл
+            # по адресу `from` уже не лежит, и сумма выходила нулевой.
+            payload["bytes"] = sum(
+                (root / unflatten(m["to"])).stat().st_size
+                for m in left
+                if (root / unflatten(m["to"])).is_file()
+            )
+            try:
+                manifest.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except OSError:
+                pass
+        store.backfill_paths(root, back_to)
+
+    _prune_empty_dirs(base)
+    prune_stale_manifests(store)
+    store.commit()
+    return {
+        "restored": len(restored),
+        "bytes": freed,
+        "failed": failed,
+        "orphans": orphans,
+    }
