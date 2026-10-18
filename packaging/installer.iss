@@ -15,7 +15,7 @@
 #define AppExeName "kurator.exe"
 
 [Setup]
-AppId={7B3E9F21-4C8D-4A16-9E5B-2D7F1C0A8834}
+AppId={{7B3E9F21-4C8D-4A16-9E5B-2D7F1C0A8834}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
