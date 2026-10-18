@@ -171,6 +171,59 @@ def test_icon_is_rebuilt_before_windows_build():
     )
 
 
+def test_installer_paths_resolve_from_the_script_directory():
+    """Пути в installer.iss должны существовать относительно самого файла.
+
+    Inno Setup считает относительные пути от каталога .iss, а не от
+    рабочего каталога. Скрипт сборки запускается из корня репозитория,
+    и без `..\\` установщик искал значок в `packaging/assets`, где его
+    нет, и писал себя в `packaging/dist` вместо `dist`. Компиляция
+    падала с «Error on line 32: The system cannot find the path
+    specified».
+
+    Проверка берёт каждый путь из .iss и требует, чтобы он существовал
+    относительно packaging/. Служебные пути вроде `{app}` и
+    `compiler:Default.isl` пропускаются: их разбирает сам Inno.
+    """
+    iss = ROOT / "packaging" / "installer.iss"
+    text = iss.read_text(encoding="utf-8")
+    base = iss.parent
+
+    paths: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        for key in ("Source:", "SetupIconFile=", "OutputDir="):
+            if not stripped.startswith(key):
+                continue
+            value = stripped[len(key) :].split(";")[0].strip().strip('"')
+            if not value or "{" in value or value.startswith("compiler:"):
+                continue
+            paths.append(value)
+
+    assert paths, "в installer.iss не нашлось ни одного пути для проверки"
+
+    wrong: list[str] = []
+    for value in paths:
+        # `*` в конце означает «всё содержимое папки» — проверяем папку.
+        candidate = value.rstrip("*").rstrip("\\/") or value
+        # В .iss пути с обратными слэшами, а на macOS это не разделитель.
+        # Без замены проверка молча пропускала бы половину ошибок.
+        native = Path(candidate.replace("\\", "/"))
+        if (base / native).exists():
+            continue
+        # Не существует ни там, ни тут — это артефакт сборки
+        # (`dist\kurator` появляется только на Windows), и проверять его
+        # на macOS нечем.
+        if (ROOT / native).exists():
+            wrong.append(f"{value} → нашлось бы в {ROOT / native}")
+
+    assert not wrong, (
+        "пути в installer.iss указаны без ..\\ и потому ищутся не там: "
+        + "; ".join(wrong)
+        + ". Inno Setup считает относительные пути от каталога самого файла."
+    )
+
+
 def test_strip_is_off_on_windows():
     """`strip` на Windows ломает бандл, и чинится это одной строкой.
 

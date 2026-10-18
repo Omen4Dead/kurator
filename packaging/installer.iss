@@ -27,9 +27,13 @@ AppSupportURL={#AppURL}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
-OutputDir=dist
+; Относительные пути Inno Setup считает ОТ КАТАЛОГА ЭТОГО ФАЙЛА, а не от
+; рабочего каталога. Скрипт сборки запускается из корня репозитория, и
+; без `..\` установщик искал значок в packaging\assets, где его нет, и
+; писал себя в packaging\dist вместо dist. Все три пути ниже — с `..\`.
+OutputDir=..\dist
 OutputBaseFilename=kurator-setup
-SetupIconFile=assets\kurator.ico
+SetupIconFile=..\assets\kurator.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 Compression=lzma/max
 SolidCompression=yes
@@ -48,7 +52,7 @@ Name: "desktopicon"; Description: "Создать значок на рабоче
 [Files]
 ; Всё содержимое dist\kurator — это собранное приложение: интерпретатор,
 ; onnxruntime, модель на 90 МБ и три файла веб-интерфейса.
-Source: "dist\kurator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\kurator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
