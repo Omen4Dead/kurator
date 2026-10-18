@@ -7,7 +7,10 @@ const state = {
   // поэтому дефолт должен совпадать с ней, иначе интерфейс включается
   // на пустой третьей вкладке.
   tab: "near-strong",
-  factory: { phash: 10, cosine: 0.9 },
+  // Заводские пороги приходят из /api/state. Зашивать их здесь нельзя:
+  // страница переживает смену версии, и зашитое число рано или поздно
+  // становится ложью — кнопка «сбросить» молча вернёт прежние значения.
+  factory: null,
   skipped: {},
   groups: [],
   clusters: [],
@@ -495,6 +498,10 @@ async function saveTuning() {
       method: "POST",
       body: JSON.stringify({ phash: +$("phash").value, cosine: +$("cosine").value }),
     });
+    // Пороги не участвуют в индексации: пересчитались находки, а база
+    // осталась нетронутой. Без этой подсказки человек после смены порога
+    // разумно жмёт «пересчитать всё заново» и платит за это минутами.
+    toast("пороги применены — переиндексация не нужна");
   } catch (err) {
     toast(err.message, true);
   }
@@ -527,6 +534,10 @@ $("btn-report").onclick = async () => {
 };
 
 $("btn-factory").onclick = async () => {
+  if (!state.factory) {
+    toast("заводские значения ещё не загрузились, попробуйте через мгновение", true);
+    return;
+  }
   const { phash, cosine } = state.factory;
   const nowP = $("phash").value;
   const nowC = $("cosine").value;
