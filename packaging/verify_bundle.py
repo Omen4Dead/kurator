@@ -72,6 +72,34 @@ def make_archive(root: Path) -> Path:
     return first
 
 
+def _app_output(process: subprocess.Popen) -> str:
+    """Что приложение успело написать в stdout и stderr.
+
+    Трубу мы сами же перенаправляем в stderr — и обязаны читать её при
+    любом исходе, а не только когда сервер не поднялся. Консольный
+    проверочный вариант именно так и объясняет поломку: печатает её и
+    выходит с кодом -1, а текст мы выбрасывали и получали голое
+    «завершилось с кодом 4294967295».
+    """
+    try:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=30)
+    except Exception as exc:
+        return f"(не дождались конца процесса: {exc!r})"
+    try:
+        if process.stdout is None:
+            return "(вывод приложения не перенаправлен)"
+        text = process.stdout.read().strip()
+    except Exception as exc:
+        return f"(вывод приложения не прочитан: {exc!r})"
+    return text or "(пусто)"
+
+
+def _block(title: str, body: str) -> str:
+    return f"\n\n{title}:\n" + "\n".join(f"      {ln}" for ln in body.splitlines())
+
+
 def wait_for_server(process: subprocess.Popen) -> None:
     """Дождаться сервера, печатая ход ожидания.
 
@@ -89,7 +117,9 @@ def wait_for_server(process: subprocess.Popen) -> None:
         if process.poll() is not None:
             fail(
                 f"приложение завершилось с кодом {process.returncode} "
-                "до поднятия сервера" + _error_report()
+                "до поднятия сервера"
+                + _block("приложение написало само", _app_output(process))
+                + _error_report()
             )
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=2)
@@ -159,26 +189,13 @@ def diagnostics(process: subprocess.Popen) -> str:
     # ответит ни на что.
     lines.extend(_windows_reports(process))
 
-    # Затем читаем то, что приложение успело написать. Трубу мы сами же
-    # и перенаправили в stderr — и молча выбросили, а это единственное
-    # место, где загрузчик PyInstaller оставляет объяснение, если падает
-    # до запуска Python. Убиваем процесс, и только потом читаем: пока он
-    # жив, чтение из трубы не вернётся.
-    try:
-        if process.poll() is None:
-            process.kill()
-        process.wait(timeout=30)
-    except Exception as exc:
-        lines.append(f"не смог остановить процесс: {exc!r}")
-    try:
-        if process.stdout is not None:
-            said = process.stdout.read().strip()
-            lines.append(
-                "приложение написало само:\n"
-                + ("\n".join("      " + ln for ln in said.splitlines()) or "      (пусто)")
-            )
-    except Exception as exc:
-        lines.append(f"вывод приложения не прочитан: {exc!r}")
+    # Затем читаем то, что приложение успело написать: труба закрывается
+    # только вместе с процессом, и до его убийства чтение не вернётся.
+    said = _app_output(process)
+    lines.append(
+        "приложение написало само:\n"
+        + ("\n".join("      " + ln for ln in said.splitlines()) or "      (пусто)")
+    )
 
     trace = Path.home() / ".kurator" / "startup-trace.log"
     if trace.is_file():
