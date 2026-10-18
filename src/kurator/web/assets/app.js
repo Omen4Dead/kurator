@@ -57,6 +57,18 @@ function whenRu(stamp) {
     { dateStyle: "short", timeStyle: "short" });
 }
 
+// Русские числительные: 1 группа, 2 группы, 5 групп. Существовавший раньше
+// вид «файла(ов)» годится для таблиц, но в обычной фразе он читается как
+// каша, поэтому для новых надписей здесь честные склонения.
+function plural(n, one, few, many) {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
+}
+
 function fmtBytes(n) {
   if (n === null || n === undefined) return "—";
   const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
@@ -261,17 +273,30 @@ function render() {
     main.innerHTML = `<p class="empty">Здесь пусто. Проверь индекс или открой другую вкладку.</p>`;
     return;
   }
-  const total = groups.reduce((sum, g) =>
+  // Пропущенные группы остаются в списке полосой, но в счёт не идут:
+  // нажать на них уже нельзя, и называть их «группами» значит обещать
+  // работу, которой не будет. Размер тоже считается только по тем, что
+  // в работе, — отметки пропущенной группы остаются в памяти, но
+  // недостижимы, и раньше из-за этого «отмечено на» показывало лишнее.
+  const isHidden = (g) => hidden[groupKeyOf(g)] !== undefined;
+  const live = groups.filter((g) => !isHidden(g));
+  const putAside = groups.length - live.length;
+  const total = live.reduce((sum, g) =>
     sum + g.files.filter((f) => isSelected(g).includes(f.path)).reduce((s, f) => s + f.size, 0), 0);
   const cards = groups.map((g, i) => {
     const sig = groupKeyOf(g);
     return hidden[sig] !== undefined ? skipStrip(g, hidden[sig]) : groupCard(g, i);
   });
-  main.innerHTML =
-    `<p class="meta">${groups.length} групп · отмечено на ${fmtBytes(total)}.
-    Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить
-    другой кадр вместо отмеченного, снимите ✓ здесь и поставьте там.</p>` +
-    cards.join("");
+  const headline = live.length
+    ? `${live.length} ${plural(live.length, "группа", "группы", "групп")} в работе` +
+      (putAside ? `, ещё ${putAside} ${plural(putAside, "оставлена", "оставлены", "оставлено")} как есть` : "") +
+      ` · отмечено на ${fmtBytes(total)}`
+    : `Все ${groups.length} ${plural(groups.length, "группа", "группы", "групп")} оставлены как есть`;
+  // Пояснение про рамки имеет смысл, только когда есть что выбирать.
+  const howto = live.length
+    ? ` Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить
+    другой кадр вместо отмеченного, снимите ✓ здесь и поставьте там.` : "";
+  main.innerHTML = `<p class="meta">${headline}.${howto}</p>` + cards.join("");
 }
 
 function findGroupByKey(key) {
