@@ -37,6 +37,36 @@ function Fail([string]$Message) {
     exit 1
 }
 
+# Где искать ISCC.exe. Захардкоженные два пути перестали работать:
+# winget ставит Inno Setup в папку пользователя, а имя папки у новых
+# версий включает номер. Угадывать варианты дальше бессмысленно — ищем
+# файл, а список мест поиска печатаем, чтобы следующая неудача была
+# понятна сразу, а не после догадок.
+$innoSearchRoots = @(
+    $env:ProgramFiles,
+    ${env:ProgramFiles(x86)},
+    "$env:LOCALAPPDATA\Programs"
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+
+function Find-InnoCompiler {
+    $known = @(
+        "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($known) { return $known }
+
+    foreach ($root in $innoSearchRoots) {
+        $hit = Get-ChildItem -LiteralPath $root -Filter 'ISCC.exe' -Recurse -File `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($hit) {
+            Write-Host "    найден: $($hit.FullName)"
+            return $hit.FullName
+        }
+    }
+    return $null
+}
+
 if ($env:OS -ne 'Windows_NT') {
     Fail "сборка идёт только на Windows: текущая система $($env:OS)"
 }
@@ -168,10 +198,7 @@ if ($NoInstaller) {
 }
 
 Say 'Inno Setup'
-$iscc = @(
-    "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$iscc = Find-InnoCompiler
 
 if (-not $iscc) {
     # winget есть в Windows 10 1809 и новее. Без него остаётся ручная
@@ -183,12 +210,12 @@ if (-not $iscc) {
     Write-Host '    ставлю через winget'
     & winget install --id JRSoftware.InnoSetup --silent --accept-package-agreements `
         --accept-source-agreements
-    $iscc = @(
-        "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $iscc = Find-InnoCompiler
 }
-if (-not $iscc) { Fail 'Inno Setup установился, но ISCC.exe не найден' }
+if (-not $iscc) {
+    Fail ('Inno Setup поставился, но ISCC.exe не найден. Искали в: ' +
+        ($innoSearchRoots -join ', '))
+}
 
 Say 'сборка установщика'
 & $iscc packaging\installer.iss
