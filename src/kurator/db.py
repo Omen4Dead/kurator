@@ -222,17 +222,31 @@ class Store:
             row = self.conn.execute("SELECT v FROM meta WHERE k=?", (key,)).fetchone()
             return row["v"] if row else default
 
-    def known_state(self) -> dict[str, tuple[int, float]]:
-        """Размер и mtime по каждому файлу, для инкрементальной индексации.
+    def known_state(self) -> dict[str, tuple[int, float, bool]]:
+        """Размер, mtime и признак «обработан» по каждому файлу.
 
         Ключ здесь — регистронезависимый: на Windows и macOS `IMG_1.JPG` и
         `img_1.jpg` это один файл, и при регистрозависимом ключе
         инкрементальная индексация объявляла «не изменился» обоим.
+
+        Третье значение — вычислялось ли по файлу хоть что-нибудь. Без него
+        файл, который не удалось прочитать, застревал навсегда: размер и
+        mtime не меняются, значит инкрементальный проход объявлял его
+        обработанным при каждом запуске. Так в индексе осталось 810 `.heic`
+        без единого эмбеддинга — после того, как kurator их научился
+        читать, обычный `index` так и не посмотрел на них вновь.
         """
         with self.lock:
-            rows = self.conn.execute("SELECT rel_key, rel_path, size, mtime FROM photos").fetchall()
+            rows = self.conn.execute(
+                "SELECT rel_key, rel_path, size, mtime, embed IS NOT NULL AS has_embed, "
+                "phash IS NOT NULL AS has_phash FROM photos"
+            ).fetchall()
         return {
-            (r["rel_key"] or r["rel_path"]).casefold(): (r["size"], r["mtime"])
+            (r["rel_key"] or r["rel_path"]).casefold(): (
+                r["size"],
+                r["mtime"],
+                bool(r["has_embed"]) or bool(r["has_phash"]),
+            )
             for r in rows
         }
 
