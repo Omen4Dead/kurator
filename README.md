@@ -9,7 +9,7 @@
 </p>
 
 <p align="center"><sub>
-Установщик для macOS (Apple Silicon), работает офлайн. <a href="https://github.com/Omen4Dead/kurator/releases/latest">kurator.dmg</a>
+Установщик для macOS (Apple Silicon). <a href="https://github.com/Omen4Dead/kurator/releases/latest">kurator.dmg</a>
 <br>
 Установщик для Windows. <a href="https://github.com/Omen4Dead/kurator/releases/latest">kurator-setup.exe</a>
 </sub></p>
@@ -300,26 +300,12 @@ macOS, поломки на других системах не всплывали
 uv run python scripts/make_testset.py /tmp/kurator-test 180
 ```
 
-Устройство проекта:
+Устройство проекта — какие файлы за что отвечают — описано в
+[AGENTS.md](AGENTS.md), в разделе «Структура». Здесь оно намеренно не
+дублируется: две копии одного списка разъезжаются, и в прошлый раз эта
+вторая отстала на шесть файлов.
 
-```
-src/kurator/
-  config.py     пути, константы, пороги
-  hashing.py    md5, pHash (DCT), dHash, хамминг на numpy
-  imaging.py    EXIF, препроцессинг 224×224 под SigLIP
-  encoder.py    сессия onnxruntime, батчинг
-  indexer.py    обход папки, инкрементальность
-  db.py         SQLite-индекс (по одному файлу рядом с фото)
-  dedupe.py     exact / near / burst, единая точка входа analyze()
-  evaluate.py   точность против эталонной разметки
-  cluster.py    leader-кластеризация по центроидам
-  quarantine.py перенос, манифест, откат, корзина
-  contact.py    контакт-листы
-  report.py     markdown и html
-  web/          локальный HTTP-сервер и одностраничный интерфейс
-```
-
-Правила ведения проекта и требования к зависимостям — в
+Правила ведения проекта и требования к зависимостям — тоже в
 [AGENTS.md](AGENTS.md).
 
 ## Про логотип
