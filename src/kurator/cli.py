@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+
+from .console import utf8_stdio
 from pathlib import Path
 
 from . import __version__
@@ -556,6 +558,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # До всего остального: иначе первая же строка вывода уронит
+    # программу на Windows, где консоль по умолчанию cp1252.
+    utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
