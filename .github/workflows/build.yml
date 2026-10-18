@@ -139,12 +139,14 @@ jobs:
   # Релиз появляется только по тегу. На обычный пуш в main артефакты
   # лежат в прогоне: их достаточно, чтобы скачать и проверить, а публиковать
   # что-то в релиз на каждом коммите нельзя — релиз должен означать версию.
+  #
+  # Джоб ничего не собирает: он забирает артефакты этого же прогона и
+  # прикладывает их к релизу тега.
   release:
     name: Приложить к релизу
     needs: [macos, windows]
     if: startsWith(github.ref, 'refs/tags/v')
-  # Сборка дольше тестов: веса, PyInstaller и Inno Setup.
-    timeout-minutes: 45
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: write
