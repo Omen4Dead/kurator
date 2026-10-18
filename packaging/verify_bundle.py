@@ -155,7 +155,11 @@ def diagnostics(process: subprocess.Popen) -> str:
     # Жив ли процесс — надо узнать ДО того, как мы его убьём ниже.
     was_alive = process.poll() is None
 
-    # Сначала читаем то, что приложение успело написать. Трубу мы сами же
+    # Смотрим на процесс, пока он ещё жив: после убийства Windows уже не
+    # ответит ни на что.
+    lines.extend(_windows_reports(process))
+
+    # Затем читаем то, что приложение успело написать. Трубу мы сами же
     # и перенаправили в stderr — и молча выбросили, а это единственное
     # место, где загрузчик PyInstaller оставляет объяснение, если падает
     # до запуска Python. Убиваем процесс, и только потом читаем: пока он
@@ -240,7 +244,6 @@ def diagnostics(process: subprocess.Popen) -> str:
         control.shutdown()
         control.server_close()
 
-    lines.extend(_windows_reports(process))
     return "\n".join(f"  {line}" for line in lines)
 
 
@@ -273,8 +276,11 @@ def _windows_reports(process: subprocess.Popen) -> list[str]:
         + ps(
             f"$p = Get-Process -Id {process.pid} -ErrorAction SilentlyContinue; "
             "if (-not $p) { 'процесса нет' } else { "
+            # `Responding` есть только у процесса с окном; спрашивать его
+            # у консольного варианта значит поймать ошибку вместо ответа.
+            "$r = try { $p.Responding } catch { 'нет окна' }; "
             "'CPU=' + [math]::Round($p.CPU, 1) + ' с, потоков=' + $p.Threads.Count "
-            "+ ', отвечает=' + $p.Responding "
+            "+ ', отвечает=' + $r "
             "+ ', памяти=' + [math]::Round($p.WorkingSet64 / 1MB) + ' МБ' }"
         ),
         "съел ли защитник что-нибудь: "

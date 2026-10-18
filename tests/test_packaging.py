@@ -186,11 +186,20 @@ def test_windows_build_verifies_the_bundle():
     assert "embedded" in text, "проверка не требует эмбеддингов"
     assert '"/"' in text or "index.html" in text, "проверка не требует главную страницу"
 
-    # Обе платформы зовут проверку: иначе Windows-сборка останется
-    # единственной непроверенной.
-    assert "verify_bundle.py" in BUILD_WIN.read_text(encoding="utf-8")
+    # Обе платформы действительно зовут проверку — но не обязательно из
+    # одного места. macOS зовёт её отдельным шагом воркфлоу, Windows —
+    # из build-windows.ps1, потому что там же собирается проверочный
+    # консольный вариант. Раньше тест считал упоминания в воркфлоу и
+    # требовал два, то есть требовал именно лишний второй запуск того
+    # же самого: он проверял не то, платформы ли проверяются, а где
+    # написана команда.
+    assert "verify_bundle.py dist\\kurator" in BUILD_WIN.read_text(encoding="utf-8"), (
+        "Windows-сборка не проверяет поставляемый бандл dist/kurator. "
+        "Проверка проверочного консольного варианта его не заменяет: "
+        "это другой исполняемый файл."
+    )
     workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
-    assert workflow.count("verify_bundle.py") >= 2, "проверка вызвана не для обеих платформ"
+    assert "verify_bundle.py" in workflow, "macOS-сборка не проверяет бандл"
 
 
 def test_runtime_has_no_subprocess_after_all():

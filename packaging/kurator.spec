@@ -11,12 +11,22 @@
 вторую копию файла значит гарантированно забыть перенести правку.
 """
 
+import os
 import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_dynamic_libs
 
 IS_MACOS = sys.platform == "darwin"
+
+# Консольный вариант собирается только для проверки сборки в CI.
+#
+# Оконное приложение при падении показывает диалог Windows, а в раннере
+# без рабочего стола закрывать этот диалог некому: процесс живёт вечно,
+# молчит и не пишет ни байта в stderr. Выглядит как зависание, и
+# диагностика упирается в стену. Консольный вариант ту же ошибку печатает
+# текстом, и падение становится видимым.
+CONSOLE = os.environ.get("KURATOR_CONSOLE") == "1"
 
 ROOT = Path(SPECPATH).parent
 MODELS_DIR = ROOT / "models"
@@ -98,7 +108,8 @@ exe = EXE(
     # На Windows это собирает .exe с окном. `console=False` обязателен
     # ещё и потому, что приложение всё равно не консольное: работает
     # оно через браузер, а stdout нужен только для диагностики сборки.
-    console=False,
+    # Исключение — проверочная сборка, см. CONSOLE выше.
+    console=CONSOLE,
     disable_windowed_traceback=False,
     icon=str(ICON),
 )

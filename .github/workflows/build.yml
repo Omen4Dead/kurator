@@ -122,8 +122,10 @@ jobs:
           NO_INSTALLER: ${{ github.event_name == 'pull_request' }}
         run: ./packaging/build-windows.ps1
 
-      - name: Проверить собранное приложение
-        run: uv run python packaging/verify_bundle.py dist/kurator
+      # Проверки собранного приложения отдельным шагом нет намеренно:
+      # build-windows.ps1 проверяет и поставляемый вариант, и проверочный
+      # консольный. Второй шаг означал бы вторую проверку того же самого, а
+      # при провале — ещё пятнадцать минут ожидания без новых сведений.
 
       - name: Приложить установщик
         if: github.event_name != 'pull_request'
