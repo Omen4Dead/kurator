@@ -65,6 +65,10 @@ Cписок зависимостей ограничен смыслом. Чего
 
 ```
 src/kurator/
+  cli.py         команды: index, dups, clusters, apply, undo, report, ui
+  __main__.py    то же самое, но через `python -m kurator`
+  desktop.py     вход собранного приложения: гасит себя, оставляет след падения
+  console.py     кириллица в консоли Windows, где кодировка cp1252
   config.py      пути, пороги, расширения — правится при смене модели
   hashing.py     md5, pHash (DCT 32×32), dHash, хамминг на numpy
   imaging.py     EXIF, препроцессинг 224×224
@@ -77,10 +81,23 @@ src/kurator/
   contact.py     контакт-листы
   report.py      markdown и html
   evaluate.py    точность против эталонной разметки
-  web/           локальный HTTP-сервер и одностраничный UI
+  web/
+    server.py    локальный HTTP-сервер, API и раздача интерфейса
+    assets/      index.html, app.js, style.css — сервер читает с диска
 scripts/
   pull-model.sh      скачивание весов с проверкой sha256
+  pull-model.ps1     то же для Windows: bash там нет
   make_testset.py    синтетический архив + ground_truth.json
+  make_ico.py        .ico из icon-1024.png для сборки под Windows
+  check_workflows.py воркфлои проверяют сами себя
+  measure_rss.py, measure_flow.py, bench_read.py   замеры
+packaging/
+  kurator.spec       общий spec для обеих платформ
+  entry.py           точка входа для PyInstaller
+  build.sh           macOS: .app и .dmg
+  build-windows.ps1  Windows: .exe и установщик Inno Setup
+  installer.iss      установщик для Windows
+  verify_bundle.py   проверка собранного приложения запуском
 ```
 
 ## Команды
@@ -207,9 +224,9 @@ git switch -c 002      # следующая, когда 001 закончена
 
 | Ситуация | Что делать |
 |----------|------------|
-| Придумал новую идею | Записать с описанием пользы и сложности |
-| Нашёл баг | Записать с описанием симптома и способа проверки |
-| Идея отвергнута | P3, с причиной. Чтобы не поднимали заново |
+| Придумал новую идею | В P2, с описанием пользы и сложности |
+| Нашёл баг | В P0, с описанием симптома и способа проверки |
+| Идея отвергнута | В P3, с причиной. Чтобы не поднимали заново |
 | Не хватило времени на пункт | Переставить порядок в блоке, не молча пропустить |
 | Пункт оказался неактуальным | Пометить и объяснить в коммите, а не выкидывать |
 
