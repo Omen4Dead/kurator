@@ -133,7 +133,9 @@ def clear_instance(pid: int | None = None) -> None:
     if pid is not None:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
+            # ValueError, а не только JSONDecodeError: UnicodeDecodeError — тоже он,
+            # а на томе exFAT рядом с json лежит служебный `._имя`, и он не utf-8.
             return
         if not isinstance(payload, dict) or payload.get("pid") != pid:
             return
@@ -156,7 +158,9 @@ def live_instance() -> dict | None:
     """
     try:
         payload = json.loads(instance_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError, а не только JSONDecodeError: UnicodeDecodeError — тоже он,
+        # а на томе exFAT рядом с json лежит служебный `._имя`, и он не utf-8.
         return None
     url = payload.get("url") if isinstance(payload, dict) else None
     if not isinstance(url, str) or not url:
@@ -180,7 +184,9 @@ def read_history() -> list[str]:
     path = history_path()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError, а не только JSONDecodeError: UnicodeDecodeError — тоже он,
+        # а на томе exFAT рядом с json лежит служебный `._имя`, и он не utf-8.
         return []
     return [p for p in payload if isinstance(p, str)]
 

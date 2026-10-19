@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/Omen4Dead/kurator/releases/latest">
-    <img src="https://img.shields.io/badge/скачать-kurator--0.4.0-E8590C?style=for-the-badge" alt="Скачать kurator 0.4.0">
+    <img src="https://img.shields.io/badge/скачать-kurator--0.4.1-E8590C?style=for-the-badge" alt="Скачать kurator 0.4.1">
   </a>
 </p>
 

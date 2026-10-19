@@ -52,7 +52,14 @@ def _load_manifest(manifest: Path) -> dict | None:
     """
     try:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError, а не только JSONDecodeError: UnicodeDecodeError —
+        # тоже он, и вылезает на файлах, которые манифестами не являются.
+        # На томе exFAT рядом с каждым файлом лежит служебный `._имя` —
+        # он двоичный, и его имя кончается на `.json`, если исходный файл
+        # был манифестом. Такой файл читать как манифест нельзя, и
+        # нельзя ронять из-за него удаление: к этому моменту файлы уже
+        # стёрты, и пользователь остаётся с ошибкой вместо результата.
         return None
     if not isinstance(payload, dict):
         return None
@@ -440,6 +447,11 @@ def prune_stale_manifests(store: Store) -> dict:
     dropped: set[int] = set()
 
     for manifest in sorted(base.glob("*.json")):
+        # Служебный файл macOS `._имя` — это не манифест, даже если имя
+        # кончается на `.json`. На томе exFAT такой лежит рядом с каждым
+        # манифестом, и glob его находит.
+        if manifest.name.startswith("._"):
+            continue
         payload = _load_manifest(manifest)
         if payload is None:
             continue
@@ -523,7 +535,12 @@ def delete_trash(store: Store, keys: list[str]) -> dict:
             continue
         moves = payload.get("moves", [])
         left = [m for m in moves if m.get("to") not in gone]
-        if len(left) == len(moves):
+        # Пустой список переносов — манифест в пустоту: откатывать по нему
+        # нечего, и держать его незачем. Раньше проверка «список не
+        # изменился» для пустого списка была истинна всегда, и такой
+        # манифест пропускался. Вместе с ним оставался и его служебный
+        # спутник macOS, а на него натыкался prune_stale_manifests.
+        if moves and len(left) == len(moves):
             continue
         if not left:
             try:
@@ -633,7 +650,7 @@ def restore_paths(store: Store, keys: list[str]) -> dict:
                 continue
             moves = payload.get("moves", [])
             left = [m for m in moves if m.get("to") not in back]
-            if len(left) == len(moves):
+            if moves and len(left) == len(moves):
                 continue
             if not left:
                 try:
