@@ -101,10 +101,29 @@ def test_sidecar_of_manifest_does_not_break_delete(tmp_path):
     assert result["deleted"] == 1, result
     assert result["failed"] == [], result
     assert list_trash(store) == []
-    # Пустой манифест должен быть убран, а вместе с ним — его служебный
-    # спутник: macOS удаляет `._имя` при удалении самого файла.
     assert not manifest.is_file(), "пустой манифест остался в карантине"
-    assert not sidecar.is_file(), "служебный спутник манифеста остался"
+
+    # Про самого спутника проверять нельзя: на macOS удаление файла
+    # уносит и его `._`-спутника, а на Linux и Windows тот остаётся
+    # лишним файлом. Судьба этого файла — дело системы, а не kurator.
+    #
+    # Важно ровно одно: спутник не должен ничего ломать. Проверяем это
+    # вторым кругом — при живом спутнике ещё один перенос и ещё одно
+    # удаление. На старом коде именно здесь вылетал UnicodeDecodeError.
+    prune_stale_manifests(store)
+
+    second_photo = tmp_path / "shot2.jpg"
+    Image.new("RGB", (40, 30), (20, 200, 60)).save(second_photo, "JPEG")
+    apply_moves(store, plan_moves(tmp_path, ["shot2.jpg"]), "by-hand", False)
+    keys = [i["key"] for i in list_trash(store)]
+    assert keys, "второй перенос должен что-то положить в корзину"
+    second = delete_trash(store, keys)
+    assert second["deleted"] == 1, second
+    assert second["failed"] == [], second
+    assert list_trash(store) == []
+
+    # И чистка манифестов на этом спутнике тоже не должна падать.
+    prune_stale_manifests(store)
     store.close()
 
 
