@@ -508,10 +508,11 @@ def delete_trash(store: Store, keys: list[str]) -> dict:
         except OSError:
             failed.append({"key": key, "error": "путь не читается"})
             continue
-        # Сравнение через parents, а не через строки: на Windows пути
-        # разъезжаются по регистру и по разделителю, и проверка «файл
-        # внутри карантина» молча становилась ложной. `os.path.commonpath`
-        # не годится — он бросает исключение на разных томах.
+        # Сравнение через parents, а не через строки: строковое сравнение
+        # путей молча расходится по регистру и канонической форме, и
+        # проверка «файл внутри карантина» становилась ложной.
+        # `os.path.commonpath` не годится — он бросает исключение на
+        # разных томах.
         base_resolved = base.resolve()
         if resolved != base_resolved and base_resolved not in resolved.parents:
             failed.append({"key": key, "error": "это не карантин, отказ"})

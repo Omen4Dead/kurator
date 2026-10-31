@@ -2,11 +2,10 @@
 
 Две разные вещи, которые легко спутать.
 
-Первая — откуда интерфейс знает заводские значения. Должен знать с
-сервера: страницу читает человек, у которого через полгода будет
-другая версия kurator с другими порогами, и зашитое в JavaScript
-число станет ложью. Проверяется статикой по app.js плюс запросом
-`/api/status` на живом сервере.
+Первая — откуда интерфейс знает заводские значения. Приложение читает их
+из `/api/state`, и там обязаны стоять пороги из конфига, а не число,
+застывшее в клиенте: иначе кнопка «сбросить» вернёт прежнее значение
+после смены порога в коде.
 
 Вторая — что происходит с индексом при смене порога. Пороги не
 участвуют в индексации, поэтому строки снимков не должны меняться
@@ -19,7 +18,6 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 import urllib.error
@@ -30,27 +28,8 @@ import pytest
 
 from kurator.config import NEAR_DUP_COSINE_STRONG, NEAR_DUP_PHASH_DISTANCE
 from kurator.db import Store
-from kurator.web.server import ASSETS
 
-APP_JS = ASSETS / "app.js"
-
-
-def test_assets_carry_no_hardcoded_factory():
-    """Заводские пороги приходят с сервера, а не зашиты в страницу.
-
-    Ловит конкретную поломку: `factory` был инициализирован числами
-    прямо в JavaScript. Пока страница не ответила, кнопка «сбросить»
-    писала в индекс эти числа, и после первой правки порога в
-    конфиге сброс молча возвращал прежнее значение.
-    """
-    source = APP_JS.read_text(encoding="utf-8")
-    literals = re.findall(r"factory:\s*\{\s*phash:\s*([0-9.]+)", source)
-    assert not literals, (
-        "заводские пороги зашиты в app.js: "
-        f"factory: {{ phash: {literals[0]} }}. "
-        "Их надо брать из /api/state, иначе кнопка «сбросить» вернёт "
-        "прежние значения после смены порога в конфиге."
-    )
+TOKEN = "test-token"
 
 
 def _free_port() -> int:
@@ -66,17 +45,18 @@ def _wait_for(port: int, timeout: float = 10.0) -> None:
     last: BaseException | None = None
     while time.time() < deadline:
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1)
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=1)
             return
+        except urllib.error.HTTPError as exc:
+            # 403 «нет токена» — тоже ответ: сервер поднялся и слушает.
+            if exc.code == 403:
+                return
+            last = exc
+            time.sleep(0.05)
         except Exception as exc:  # noqa: BLE001 — причина нужна в тесте
             last = exc
             time.sleep(0.05)
     raise AssertionError(f"сервер не поднялся: {last!r}")
-
-
-def _token(port: int) -> str:
-    page = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read().decode()
-    return page.split('KURATOR_TOKEN = "')[1].split('"')[0]
 
 
 def _get(port: int, token: str, path: str) -> dict:
@@ -112,21 +92,21 @@ def server(tmp_path: Path):
         from kurator.web.server import serve
 
         try:
-            serve(root, port=port, open_browser=False)
+            serve(root, port=port, token=TOKEN)
         finally:
             finished.set()
 
     threading.Thread(target=run, daemon=True).start()
     _wait_for(port)
     yield port, root
-    _post(port, _token(port), "/api/quit")
+    _post(port, TOKEN, "/api/quit")
     assert finished.wait(10), "сервер не остановился после /api/quit"
 
 
 def test_status_factory_matches_config(server):
     """`factory` в статусе совпадает с порогами из кода."""
     port, _ = server
-    status = _get(port, _token(port), "/api/state")
+    status = _get(port, TOKEN, "/api/state")
     assert status["factory"]["phash"] == pytest.approx(NEAR_DUP_PHASH_DISTANCE)
     assert status["factory"]["cosine"] == pytest.approx(NEAR_DUP_COSINE_STRONG)
 
@@ -137,10 +117,9 @@ def test_defaults_reflect_stored_override(server):
     Именно эта разница объясняет пользователю, что он настроил своё.
     """
     port, _ = server
-    token = _token(port)
-    _post(port, token, "/api/tuning", {"phash": 7, "cosine": 0.9})
+    _post(port, TOKEN, "/api/tuning", {"phash": 7, "cosine": 0.9})
 
-    status = _get(port, token, "/api/state")
+    status = _get(port, TOKEN, "/api/state")
     assert status["defaults"]["phash"] == pytest.approx(7)
     assert status["factory"]["phash"] == pytest.approx(NEAR_DUP_PHASH_DISTANCE)
 
@@ -166,12 +145,11 @@ def test_tuning_change_leaves_index_untouched(server):
     быть правдой незаметно для разработчика.
     """
     port, archive = server
-    token = _token(port)
 
     before = _rows(archive)
-    _post(port, token, "/api/tuning", {"phash": 2, "cosine": 0.99})
-    _post(port, token, "/api/tuning", {"phash": 10, "cosine": 0.8})
+    _post(port, TOKEN, "/api/tuning", {"phash": 2, "cosine": 0.99})
+    _post(port, TOKEN, "/api/tuning", {"phash": 10, "cosine": 0.8})
     after = _rows(archive)
 
     assert before == after, "смена порога изменила строки индекса"
-    assert _get(port, token, "/api/state")["defaults"]["phash"] == 10
+    assert _get(port, TOKEN, "/api/state")["defaults"]["phash"] == 10

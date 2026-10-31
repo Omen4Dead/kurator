@@ -35,9 +35,9 @@ def walk_media(root: Path) -> Iterator[tuple[str, Path]]:
             suffix = path.suffix.lower()
             if suffix not in IMAGE_EXTENSIONS and suffix not in VIDEO_EXTENSIONS:
                 continue
-            # Через rel_posix, а не str(relative_to()): на Windows второй
-            # даёт обратные слэши, и путь потом не находится ни через
-            # split("/") в отчёте, ни при сравнении в индексе.
+            # Через rel_posix, а не str(relative_to()): контракт индекса —
+            # разделитель «/» на любой системе, и путь потом находится и
+            # через split("/") в отчёте, и при сравнении в индексе.
             yield rel_posix(path, root), path
 
 

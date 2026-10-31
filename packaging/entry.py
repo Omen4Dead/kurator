@@ -3,9 +3,18 @@
 Отдельный файл нужен потому, что собирается он как скрипт, а не как
 модуль пакета: так интерпретатор внутри бандла не пытается импортировать
 kurator до распаковки.
+
+Приложение запускает бэкенд с аргументами (`ui --port N`), и тогда
+работает обычный командный интерфейс. Запуск без аргументов — это
+старт бэкенда приложением: корень возьмётся из прошлой сессии.
 """
 
-from kurator.desktop import main
+import sys
+
+if len(sys.argv) > 1:
+    from kurator.cli import main
+else:
+    from kurator.desktop import main
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

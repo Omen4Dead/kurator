@@ -175,26 +175,6 @@ def test_restore_puts_file_back_into_index(tmp_path):
     assert (tmp_path / "shot.jpg").is_file()
 
 
-def test_assets_never_render_a_bare_global():
-    """В разметку не попадает `top` без объявления.
-
-    `window.top` — это глобальное имя браузера, и строка вида
-    `main.innerHTML = top + ...` не бросает ошибку, а молча подставляет
-    объект окна, который на экране выглядит как `[object Window]`.
-    Ошибку такого рода `node --check` не видит, а человек замечает
-    только глазами, и то если знает, что искать.
-    """
-    import re
-
-    source = (Path(__file__).resolve().parent.parent
-              / "src" / "kurator" / "web" / "assets" / "app.js").read_text(encoding="utf-8")
-    stray = re.findall(r"(?<![\w.$])top(?![\w$])", source)
-    assert not stray, (
-        "в app.js есть `top` без объявления — это window.top, и на экране "
-        "появится [object Window]"
-    )
-
-
 def test_trash_count_has_no_limit_unlike_runs(tmp_path):
     """Счётчик должен видеть всё, а не двадцать переносов.
 
