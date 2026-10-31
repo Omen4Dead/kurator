@@ -1,7 +1,7 @@
 import datetime as dt
 import json
 import shutil
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 
 from kurator.config import LEGACY_QUARANTINE_DIRNAME, QUARANTINE_DIRNAME
 from kurator.db import Store
@@ -218,28 +218,18 @@ def test_index_status_survives_missing_meta(tmp_path):
 def test_blocked_roots_are_rejected(tmp_path):
     """Корни, с которыми kurator не должен работать, помечены.
 
-    Проверяется через `PurePosixPath` и `PureWindowsPath`, а не через
-    `Path`: `Path` на каждой системе даёт свой путь, и проверка вроде
-    `too_broad(Path("/System"))` на Windows утверждала бы POSIX-поведение
-    там, где такого пути и корня нет. Это был красный тест на Windows,
-    который искал баг в отсутствующем месте.
+    Проверяется через `PurePosixPath`, а не через `Path`: проверка вида
+    `too_broad(Path("/System"))` смотрит на диск, а список заблокированных
+    корней обязан срабатывать до любого обращения к нему.
     """
     from kurator.web.server import too_broad
 
-    # POSIX: корень и системные каталоги, куда лезть бессмысленно.
+    # Корень и системные каталоги, куда лезть бессмысленно.
     for posix_root in ("/", "/bin", "/etc", "/System", "/usr", "/var"):
         assert too_broad(PurePosixPath(posix_root)) is True, posix_root
 
-    # Windows: корни томов. Буквы дисков заранее не перечислишь, поэтому
-    # они ловятся регуляркой, а не списком. Без этого указал бы kurator
-    # на `C:\` — и он пошёл бы обходить всю систему.
-    for win_root in ("C:\\", "d:/", "Z:\\"):
-        assert too_broad(PureWindowsPath(win_root)) is True, win_root
-
-    # Голый разделитель: на POSIX это корень системы, на Windows — корень
-    # текущего тома. Второй случай опаснее и тоже обязан быть помечен.
-    assert too_broad(PureWindowsPath("/")) is True
-    assert too_broad(PureWindowsPath("\\")) is True
+    # Повторный разделитель — тот же корень.
+    assert too_broad(PurePosixPath("//")) is True
 
     # А вот обычная папка помечена быть не должна — иначе kurator
     # откажется работать там, где ему положено работать. Здесь путь
@@ -374,17 +364,18 @@ def test_list_trash_shows_quarantined_files_with_origin(tmp_path):
 
 
 def test_manifest_written_with_backslashes_is_read_as_posix(tmp_path):
-    """Манифест, написанный на Windows, должен читаться как будто там «/».
+    """Манифест с обратными слэшами должен читаться как будто там «/».
 
-    Регрессия, найденная CI на Windows. `list_trash` брала ключ из манифеста
-    как есть, а при обходе диска — через `as_posix()`. На Windows это
-    `.kurator\\quarantine\\a.jpg` и `.kurator/quarantine/a.jpg`: один и тот
-    же файл получал два ключа, не попадал в `claimed` и показывался в
-    корзине дважды. Из того же расхождения ломалось удаление: сбрасывался
-    один ключ, второй оставался, и файл не уходил.
+    Такие манифесты оставила старая Windows-версия: `list_trash` брала
+    ключ из манифеста как есть, а при обходе диска — через `as_posix()`,
+    и это были `.kurator\\quarantine\\a.jpg` и `.kurator/quarantine/a.jpg`:
+    один и тот же файл получал два ключа, не попадал в `claimed` и
+    показывался в корзине дважды. Из того же расхождения ломалось
+    удаление: сбрасывался один ключ, второй оставался, и файл не уходил.
 
-    Тест пишет манифест руками, обратными слэшами — ровно так, как его
-    пишет Windows.
+    Архивы с такими манифестами уже существуют, поэтому нормализация при
+    чтении остаётся. Тест пишет манифест руками, обратными слэшами —
+    ровно в том виде, в котором его оставила старая версия.
     """
     import json
 
@@ -566,10 +557,9 @@ def test_migration_moves_quarantine_and_keeps_undo_working(tmp_path):
     shutil.move(str(tmp_path / "a.jpg"), str(legacy / "a.jpg"))
     shutil.move(str(tmp_path / "b.jpg"), str(legacy / "b.jpg"))
     manifest = legacy / "manifest_by-hand_1_2.json"
-    # Пишем через json.dumps, а не строкой: на Windows в tmp_path есть
-    # обратные слэши, и такая строка даёт невалидный JSON. Манифест
-    # не читается, миграция его молча пропускает, и тест падает не там,
-    # где дело.
+    # Пишем через json.dumps, а не строкой: экранирование путей в строке
+    # руками — верный способ получить невалидный JSON, а манифест, который
+    # не читается, миграция молча пропускает, и тест падает не там, где дело.
     manifest.write_text(
         json.dumps(
             {

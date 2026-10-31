@@ -1,44 +1,24 @@
-"""Проверки, которых раньше не было: платформенная независимость.
+"""Инварианты индекса и окружения, которые не должны разъезжаться.
 
-Всё это проверяется на любой системе, хотя предмет правок — Windows,
-Linux и поведение на медленном DNS. Локально такие поломки не видны:
-на macOS `sips` есть, разделитель пути один, а резолвер отвечает мгновенно.
+Всё это проверяется на любой системе, но предмет — контракты kurator:
+пути через «/», регистронезависимый ключ, дата без EXIF, отсутствие
+внешних вызовов в рантайме.
 """
 
 from __future__ import annotations
-
-from pathlib import PureWindowsPath
 
 from kurator.config import rel_posix, unflatten
 from kurator.contact import FONT_CANDIDATES, _font_is_readable
 from kurator.imaging import file_times
 
 
-def test_relative_paths_are_posix_on_every_platform(tmp_path):
-    """Путь в индексе всегда через «/», независимо от системы.
+def test_relative_paths_are_posix(tmp_path):
+    """Путь в индексе всегда через «/», и обратно он разворачивается.
 
-    `str(path.relative_to(root))` на Windows даёт обратные слэши, и дальше
-    путь режется через `split("/")` в отчёте и в `app.js`. Результат —
-    пустые заголовки и битые ссылки на превью.
+    Индекс, манифесты и веб-интерфейс режут пути через `split("/")`:
+    путь, записанный с другим разделителем, не находится ни в отчёте,
+    ни в индексе.
     """
-    windows_root = PureWindowsPath("D:/Photos")
-    windows_rel = PureWindowsPath("D:/Photos/Отпуск/Барселона/IMG_0001.jpg")
-
-    # Смысл проверки — в разделителе: `relative_to` срезает общий префикс,
-    # а `as_posix` приводит остаток к прямому слэшу независимо от системы.
-    rel = windows_rel.relative_to(windows_root).as_posix()
-
-    assert rel == "Отпуск/Барселона/IMG_0001.jpg"
-    assert "\\" not in rel
-
-    # Обратно разворачивается в Path текущей системы.
-    rebuilt = unflatten(rel)
-    assert rebuilt.parts == ("Отпуск", "Барселона", "IMG_0001.jpg")
-    assert len(rebuilt.parts) == 3, "разделитель не развернулся в части пути"
-
-
-def test_rel_posix_matches_as_posix(tmp_path):
-    """Помощник совпадает с as_posix на вложенных путях."""
     nested = tmp_path / "Photos" / "2024" / "Отпуск" / "IMG_0001.jpg"
     nested.parent.mkdir(parents=True)
     nested.write_bytes(b"x")
@@ -48,30 +28,22 @@ def test_rel_posix_matches_as_posix(tmp_path):
     assert rel == "Photos/2024/Отпуск/IMG_0001.jpg"
     assert "\\" not in rel
 
+    rebuilt = unflatten(rel)
+    assert rebuilt.parts == ("Photos", "2024", "Отпуск", "IMG_0001.jpg")
 
-def test_fonts_are_searched_on_all_platforms():
-    """Список шрифтов не должен состоять из одних макосовских путей.
 
-    Раньше это были три пути в `/System/Library/Fonts`, и на любой другой
-    системе список оказывался пустым — контакт-листы рисовались
-    нечитаемым растром.
+def test_fonts_are_searched_and_found():
+    """Список шрифтов не должен быть пустым и обязан находиться на macOS.
+
+    Если не нашёлся ни один кандидат, подписи на контакт-листах рисуются
+    заглушкой, и это должно падать здесь, а не выглядеть молча.
     """
     assert FONT_CANDIDATES, "список шрифтов пуст"
-
-    macos = [p for p in FONT_CANDIDATES if p.startswith("/System")]
-    windows = [p for p in FONT_CANDIDATES if p.startswith("C:/")]
-    linux = [p for p in FONT_CANDIDATES if p.startswith("/usr/share/fonts")]
-
-    assert macos, "нет кандидатов на macOS"
-    assert windows, "нет кандидатов на Windows"
-    assert linux, "нет кандидатов на Linux"
-
-    # CI гоняет этот файл на всех трёх системах, и на каждой должен
-    # находиться хотя бы один шрифт: если нет, подписи рисуются заглушкой,
-    # и это надо чтобы падало здесь, а не выглядело молча.
+    assert all(p.startswith("/System") or p.startswith("/Library") for p in FONT_CANDIDATES), (
+        "целевая платформа — macOS, кандидаты должны быть её путями"
+    )
     assert _font_is_readable(), (
-        "ни один шрифт не найден: подписи на контакт-листах будут "
-        "нечитаемыми. Поставить DejaVuSans или Noto Sans."
+        "ни один шрифт не найден: подписи на контакт-листах будут нечитаемыми"
     )
 
 
@@ -125,16 +97,11 @@ def test_file_times_falls_back_to_mtime(tmp_path):
     assert as_text.startswith(str(moment.year))
 
 
-def test_pull_model_script_has_no_macos_only_tools():
-    """Скрипт скачивания весов должен работать и на Linux.
+def test_pull_model_script_verifies_the_hash():
+    """Скрипт скачивания весов обязан сверять sha256 всегда.
 
-    `shasum` есть на macOS, но на ubuntu может отсутствовать, и проверка
-    хеша молча проходила бы как «уже на месте».
-
-    Бит исполнения здесь не проверяется осознанно: на Windows он не имеет
-    смысла, а CI всё равно зовёт скрипт через bash. Проверять его —
-    значит заставлять тест краснеть на одной системе из-за свойства,
-    которого там не бывает.
+    Иначе несовпадение хеша молча проходит как «уже на месте», и веса
+    оказываются битыми без единого слова.
     """
     from pathlib import Path
 
@@ -145,14 +112,13 @@ def test_pull_model_script_has_no_macos_only_tools():
         return  # в установленном пакете скрипта нет, это не ошибка
 
     text = script.read_text(encoding="utf-8")
-    assert "sha256sum" in text, "нет запасного пути без shasum"
-    # `shasum` остаётся как запасной вариант для macOS, поэтому само по
-    # себе упоминание не считается проблемой.
+    assert "shasum -a 256" in text, "скрипт не сверяет sha256"
+
 
 def test_index_key_ignores_case(tmp_path):
     """Ключ индекса не должен зависеть от регистра имени.
 
-    На Windows и macOS `IMG_1.JPG` и `img_1.jpg` — один и тот же файл:
+    На APFS по умолчанию `IMG_1.JPG` и `img_1.jpg` — один и тот же файл:
     файловая система регистр не различает, второй файл туда просто не
     запишется. А индекс обязан различать, иначе при переиндексации оба
     ключа оказываются в `known_state` с одинаковым размером и mtime, и
@@ -189,9 +155,9 @@ def test_index_key_ignores_case(tmp_path):
 def test_different_files_keep_separate_rows(tmp_path):
     """Схлопывание не должно пожирать разные файлы.
 
-    Регрессия-страховка к тесту выше: если ключ Made регистронезависимым
-    слишком широко, `IMG_1.JPG` и `PHOTO.JPG` склеятся в одну запись и
-    один снимок выпадет из индекса молча.
+    Регрессия-страховка к тесту выше: если ключ сделать
+    регистронезависимым слишком широко, `IMG_1.JPG` и `PHOTO.JPG` склеятся
+    в одну запись и один снимок выпадет из индекса молча.
     """
     from kurator.db import Photo, Store
 

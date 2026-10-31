@@ -38,11 +38,10 @@ from pathlib import Path
 PORT = 8765
 TIMEOUT = 300.0
 
-# Сколько ждать поднятия сервера. На Windows первый запуск собранного
-# приложения занимает минуты: защитник проверяет двести мегабайт бандла, и
-# каждое открытие файла ждёт очереди. 120 секунд на это не хватало, и
-# проверка объявляла провалом то, что было медленным, а не сломанным.
-STARTUP_BUDGET = 900.0
+# Сколько ждать поднятия сервера. Первый запуск собранного приложения
+# медленный: Gatekeeper проверяет двести мегабайт бандла, и короткий
+# бюджет объявлял провалом то, что было медленным, а не сломанным.
+STARTUP_BUDGET = 600.0
 
 
 def fail(message: str) -> None:
@@ -53,9 +52,8 @@ def fail(message: str) -> None:
 def make_archive(root: Path) -> Path:
     """Архив с вложенной папкой, точным дубликатом и нестандартными форматами.
 
-    Имена с пробелом и кириллицей — не украшение: разделитель пути в
-    собранном приложении на Windows обязан оставаться прямым, а имена
-    показываться как на диске. Проверяется именно этим деревом.
+    Имена с пробелом и кириллицей — не украшение: они обязаны пройти через
+    индекс и вернуться в интерфейс в том виде, как на диске.
 
     HEIC и AVIF добавлены не для разнообразия. libheif — нативная
     библиотека, и ничто не мешает PyInstaller её не увезти: приложение
@@ -135,11 +133,10 @@ def _block(title: str, body: str) -> str:
 def wait_for_server(process: subprocess.Popen) -> None:
     """Дождаться сервера, печатая ход ожидания.
 
-    Бюджет в 120 секунд оказался мал: на Windows сборка стартует минуты,
-    и это не поломка. На CI это выглядело так, будто приложение зависло
-    намертво, — а на деле оно ещё разворачивало и сканировалось
-    защитником. Поэтому ждём дольше и каждые полминуты говорим, где
-    процесс находится: без этого «долго» и «зависло» неразличимы.
+    Бюджет ждать долго: первая проверка бандла системой не мгновенна, и
+    на CI «долго» выглядело так, будто приложение зависло намертво, — а
+    на деле оно ещё разворачивалось. Поэтому каждые полминуты говорим,
+    где процесс находится: без этого «долго» и «зависло» неразличимы.
     """
     started = time.time()
     deadline = started + STARTUP_BUDGET
@@ -217,10 +214,6 @@ def diagnostics(process: subprocess.Popen) -> str:
     # Жив ли процесс — надо узнать ДО того, как мы его убьём ниже.
     was_alive = process.poll() is None
 
-    # Смотрим на процесс, пока он ещё жив: после убийства Windows уже не
-    # ответит ни на что.
-    lines.extend(_windows_reports(process))
-
     # Затем читаем то, что приложение успело написать: труба закрывается
     # только вместе с процессом, и до его убийства чтение не вернётся.
     said = _app_output(process)
@@ -296,58 +289,6 @@ def diagnostics(process: subprocess.Popen) -> str:
     return "\n".join(f"  {line}" for line in lines)
 
 
-def _windows_reports(process: subprocess.Popen) -> list[str]:
-    """Что Windows думает о зависшем процессе.
-
-    На Windows процесс умеет висеть молча: загрузчик ждёт окна, которого
-    в сессии без рабочего стола нет, и сообщения об этом не печатает ни
-    один. Три прибора отвечают на разные вопросы: съел ли защитник файл,
-    было ли что-то в журнале событий и — главное — работает ли процесс
-    вообще, что видно по времени CPU и по `Responding`.
-    """
-    if os.name != "nt":
-        return []
-
-    def ps(command: str) -> str:
-        try:
-            done = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", command],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            return (done.stdout or done.stderr).strip()
-        except Exception as exc:
-            return f"не отработало: {exc!r}"
-
-    return [
-        "процесс глазами Windows: "
-        + ps(
-            f"$p = Get-Process -Id {process.pid} -ErrorAction SilentlyContinue; "
-            "if (-not $p) { 'процесса нет' } else { "
-            # `Responding` есть только у процесса с окном; спрашивать его
-            # у консольного варианта значит поймать ошибку вместо ответа.
-            "$r = try { $p.Responding } catch { 'нет окна' }; "
-            "'CPU=' + [math]::Round($p.CPU, 1) + ' с, потоков=' + $p.Threads.Count "
-            "+ ', отвечает=' + $r "
-            "+ ', памяти=' + [math]::Round($p.WorkingSet64 / 1MB) + ' МБ' }"
-        ),
-        "съел ли защитник что-нибудь: "
-        + ps(
-            "$d = Get-MpThreatDetection -ErrorAction SilentlyContinue "
-            "| Select-Object -First 3 "
-            "| ForEach-Object { $_.Resources -join ',' }; "
-            "if ($d) { $d -join '; ' } else { 'нет' }"
-        ),
-        "журнал событий: "
-        + ps(
-            "Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2} -MaxEvents 5 "
-            "-ErrorAction SilentlyContinue "
-            "| ForEach-Object { $_.Message.Split([Environment]::NewLine)[0] }"
-        ).replace("\n", " | "),
-    ]
-
-
 def _error_report() -> str:
     """Показать след падения, если приложение его оставило.
 
@@ -370,13 +311,7 @@ def get(path: str) -> str:
 
 
 def _utf8_stdout() -> None:
-    """Научить консоль печатать по-русски.
-
-    На Windows stdout по умолчанию cp1252, и русский текст в нём не
-    представим: скрипт падал с UnicodeEncodeError на первой же строке
-    вывода. Проверка собра��ного приложения на Windows не прошла бы
-    именно из-за этого — то есть проверяла бы не то.
-    """
+    """Научить консоль печатать по-русски независимо от окружения."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -393,16 +328,13 @@ def main() -> None:
     if not bundle.is_dir():
         fail(f"нет каталога {bundle}")
 
-    # Ищем исполняемый файл. Раскладка разная: на Windows это kurator.exe
-    # рядом с каталогом сборки, на macOS — внутри .app, и передать можно
-    # как сам .app, так и каталог, в котором он лежит. onedir-сборка —
-    # это kurator/kurator внутри dist.
+    # Ищем исполняемый файл. Передать можно как сам .app, так и каталог,
+    # в котором он лежит; onedir-сборка — это kurator/kurator внутри dist.
     candidates = [
         # передан сам .app
         bundle / "Contents" / "MacOS" / "kurator",
         # передан каталог сборки
         bundle / "kurator" / "Contents" / "MacOS" / "kurator",
-        bundle / "kurator.exe",
         bundle / "kurator",
         bundle / "kurator" / "kurator",
     ]

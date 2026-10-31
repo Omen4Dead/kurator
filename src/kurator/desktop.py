@@ -10,7 +10,6 @@ from __future__ import annotations
 import traceback
 from pathlib import Path
 
-from .console import utf8_stdio
 from .web.server import IDLE_SHUTDOWN_SECONDS, serve
 
 ERROR_LOG = Path.home() / ".kurator" / "last-error.log"
@@ -47,19 +46,13 @@ def main() -> None:
     # В консоли такого нет: там `kurator ui` запускают руками и пользуются
     # сервером без вкладки, поэтому режим ожидания там остаётся выключенным.
     try:
-        # У оконного приложения потоков обычно нет, и utf8_stdio ничего
-        # не делает. Но если сборка консольная — а такой вариант
-        # собирается специально для проверки — русский текст обязан
-        # печататься, а не ронять программу.
-        utf8_stdio()
         serve(root=None, idle_timeout=IDLE_SHUTDOWN_SECONDS)
     except BaseException as exc:
         path = _write_error_report(exc)
         if path is not None:
             try:
-                # Без консоли сообщение некуда деть. На macOS и Windows
-                # приложение может быть запущено из файлового менеджера,
-                # и без osascript / msg ни одна подсказка не дойдёт.
+                # Без консоли сообщение некуда деть: приложение запускается
+                # из Finder, и без osascript ни одна подсказка не дойдёт.
                 __import__("subprocess").run(
                     [
                         "osascript",

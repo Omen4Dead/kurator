@@ -1,252 +1,60 @@
 """Упаковка: то, что должно остаться верным всегда.
 
 Всё здесь ловит рассинхронизацию, которая иначе обнаружилась бы на
-чужой машине и молча. Три истории уже случились, и все три выглядели
-одинаково — «сборка прошла, значит всё в порядке»:
+чужой машине и молча. Истории уже случались, и выглядели одинаково —
+«сборка прошла, значит всё в порядке»:
 
 - веб-ассеты не попали в бандл, и приложение отдавало 404;
-- `ctypes.wintypes` был исключён из спека, и на Windows падал `sqlite3`,
-  а на macOS всё выглядело исправным;
-- иконка `.ico` разошлась с исходным PNG, и в Windows собиралась старая.
+- адрес модели при `sys.frozen` вёл внутрь бандла, а веса туда не
+  положили.
 
 Проверки дешёвые, но ловят именно то, до чего не доходит ручной прогон.
 """
 
 from __future__ import annotations
 
-import io
-import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "packaging" / "kurator.spec"
-INNO = ROOT / "packaging" / "installer.iss"
-BUILD_WIN = ROOT / "packaging" / "build-windows.ps1"
 BUILD_MAC = ROOT / "packaging" / "build.sh"
-ICO_SOURCE = ROOT / "assets" / "icon-1024.png"
-ICO_TARGET = ROOT / "assets" / "kurator.ico"
+ICON = ROOT / "assets" / "kurator.icns"
 
 
-def test_committed_icon_matches_source_png():
-    """`.ico` должен собираться из текущего PNG, а не из прошлого.
+def test_spec_targets_macos_only():
+    """Спек собирает macOS-бандл и не ветвится по платформам.
 
-    Иначе поменяли логотип, а Windows-сборка продолжает брать старую
-    иконку — и это видно только пользователям, у которых она висит в
-    панели задач. Сборка при этом проходит без единого сообщения.
-
-    Сверка идёт по пикселям, а не по байтам файла: один и тот же Pillow
-    кодирует ICO на macOS и на Linux по-разному (41802 против 42078 байт
-    при одинаковых картинках), и байтовое сравнение краснело бы на
-    Linux без всякой причины.
-    """
-    assert ICO_TARGET.is_file(), (
-        f"нет {ICO_TARGET.name}. Собери: uv run python scripts/make_ico.py"
-    )
-
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "make_ico.py"), "--check"],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-    )
-    assert result.returncode == 0, (
-        "иконка разошлась с исходником:\n" + result.stdout + result.stderr
-    )
-
-
-def test_ico_holds_every_size_windows_needs():
-    """В .ico нужен набор размеров, а не один большой.
-
-    Windows растянет единственный кадр на панели задач и в проводнике,
-    и иконка станет кашей. Набор проверен на всех семи кадрах, а не по
-    факту существования файла.
-    """
-    from PIL import Image
-
-    with Image.open(ICO_TARGET) as image:
-        sizes = sorted(image.info.get("sizes", []))
-
-    expected = sorted((size, size) for size in (16, 24, 32, 48, 64, 128, 256))
-    assert sizes == expected, f"в .ico размеры {sizes}, ожидались {expected}"
-
-
-def test_spec_excludes_nothing_windows_sqlite_needs():
-    """`ctypes.wintypes` нельзя выкидывать из поставки.
-
-    На macOS его никто не импортирует, и строка в `excludes` выглядит
-    безобидной. На Windows его использует `sqlite3`: без него приложение
-    запустилось бы и упало на первом же обращении к архиву — то есть
-    ровно тогда, когда пользователь уже ждёт результат.
-
-    Список берётся из самого вызова `Analysis`, а не поиском по тексту:
-    в файле есть комментарий, который объясняет, что модуль исключать
-    нельзя, и простой поиск споткнулся бы именно на нём.
-    """
-    import ast
-
-    tree = ast.parse(SPEC.read_text(encoding="utf-8"))
-    excludes: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Analysis":
-            for keyword in node.keywords:
-                if keyword.arg == "excludes":
-                    excludes = [
-                        element.value
-                        for element in keyword.value.elts
-                        if isinstance(element, ast.Constant)
-                    ]
-
-    assert excludes, "не нашёл список excludes в Analysis"
-    assert "ctypes.wintypes" not in excludes, (
-        "ctypes.wintypes нельзя исключать: на Windows его держит sqlite3"
-    )
-
-
-def test_spec_builds_both_platforms():
-    """Спек должен быть общим, иначе правки разъедутся.
-
-    Две копии одного файла — это гарантированный момент, когда одну
-    забыли поправить и сломали одну из платформ. Поэтому: BUNDLE и
-    macOS-специфика только под условием, значок выбирается по системе.
+    Платформенная развилка в spec — это код, который на машине
+    разработчика не исполняется никогда: ветка для другой системы
+    ломается молча, и узнаёт об этом тот, кто собирает там. Целевая
+    платформа одна — macOS, значит и ветвления быть не должно.
     """
     text = SPEC.read_text(encoding="utf-8")
 
-    assert "IS_MACOS" in text, "в spec нет разделения платформ"
-    assert "sys.platform" in text, "платформа определяется не через sys.platform"
-    assert "kurator.ico" in text, "в spec не упомянута иконка для Windows"
-    assert "kurator.icns" in text, "в spec не упомянут значок для macOS"
-
-    # BUNDLE обязан быть под условием: на Windows он не имеет смысла.
-    bundle_line = next(
-        line for line in text.splitlines() if line.strip().startswith("app = BUNDLE")
-    )
-    guarded = "if IS_MACOS:" in text.splitlines()[: text.splitlines().index(bundle_line)][-4:]
-    assert guarded, "BUNDLE не под условием платформы"
+    assert "sys.platform" not in text, "в spec появилась ветка по платформе"
+    assert "kurator.icns" in text, "в spec не упомянут значок .icns"
+    assert "kurator.ico" not in text, "в spec остался значок для Windows"
+    assert "app = BUNDLE" in text, "в spec нет сборки .app"
 
 
-def test_installer_matches_built_binary():
-    """Установщик должен ставить то, что собирает сборка.
-
-    Имя расходится легко: поменяли `name` в spec, а Inno Setup продолжает
-    искать прежнее — и падает уже на пользователе.
-    """
-    assert INNO.is_file(), f"нет {INNO.name}"
-
-    spec_text = SPEC.read_text(encoding="utf-8")
-    assert 'name="kurator"' in spec_text, "spec собирает не kurator"
-    assert 'AppExeName "kurator.exe"' in INNO.read_text(encoding="utf-8")
+def test_icon_exists_for_the_bundle():
+    """Значок, который требует spec, обязан лежать в репозитории."""
+    assert ICON.is_file(), f"нет {ICON.name} — сборка упадёт в spec"
 
 
-def test_build_scripts_reference_existing_files():
-    """Скрипты сборки не должны ссылаться на несуществующее.
+def test_build_script_pulls_weights_and_verifies_bundle():
+    """Скрипт сборки не должен ссылаться на несуществующее.
 
-    Опечатка в пути не останавливает сборку на macOS, где этого пути
-    может не быть вовсе, и обнаруживается только на другой системе —
-    в лучшем случае, в худшем никогда.
+    Опечатка в пути не останавливает сборку там, где этот путь не
+    проверяется, и обнаруживается в лучшем случае в CI.
     """
     mac_text = BUILD_MAC.read_text(encoding="utf-8")
-    win_text = BUILD_WIN.read_text(encoding="utf-8")
 
     assert "scripts/pull-model.sh" in mac_text, "build.sh не тянет веса"
     assert "packaging/verify_bundle.py" in mac_text, "build.sh не проверяет бандл"
 
-    assert "pull-model.ps1" in win_text, "build-windows.ps1 не тянет веса"
-    assert "make_ico.py" in win_text, "build-windows.ps1 не собирает иконку"
-    assert "packaging\\verify_bundle.py" in win_text, (
-        "build-windows.ps1 не проверяет бандл"
-    )
 
-
-def test_icon_is_rebuilt_before_windows_build():
-    """Сборщик иконки обязан проверять её свежесть, а не молча перезаписывать.
-
-    Иначе поменяли PNG, собрали на Windows, и в рабочей копии появилось
-    изменение, которого никто не замечал до самого коммита.
-    """
-    text = BUILD_WIN.read_text(encoding="utf-8")
-    assert "make_ico.py" in text
-    assert "--check" in text, (
-        "иконка перезаписывается молча: нужен --check, чтобы падать на расхождении"
-    )
-
-
-def test_installer_paths_resolve_from_the_script_directory():
-    """Пути в installer.iss должны существовать относительно самого файла.
-
-    Inno Setup считает относительные пути от каталога .iss, а не от
-    рабочего каталога. Скрипт сборки запускается из корня репозитория,
-    и без `..\\` установщик искал значок в `packaging/assets`, где его
-    нет, и писал себя в `packaging/dist` вместо `dist`. Компиляция
-    падала с «Error on line 32: The system cannot find the path
-    specified».
-
-    Проверка берёт каждый путь из .iss и требует, чтобы он существовал
-    относительно packaging/. Служебные пути вроде `{app}` и
-    `compiler:Default.isl` пропускаются: их разбирает сам Inno.
-    """
-    iss = ROOT / "packaging" / "installer.iss"
-    text = iss.read_text(encoding="utf-8")
-    base = iss.parent
-
-    paths: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        for key in ("Source:", "SetupIconFile=", "OutputDir="):
-            if not stripped.startswith(key):
-                continue
-            value = stripped[len(key) :].split(";")[0].strip().strip('"')
-            if not value or "{" in value or value.startswith("compiler:"):
-                continue
-            paths.append(value)
-
-    assert paths, "в installer.iss не нашлось ни одного пути для проверки"
-
-    wrong: list[str] = []
-    for value in paths:
-        # `*` в конце означает «всё содержимое папки» — проверяем папку.
-        candidate = value.rstrip("*").rstrip("\\/") or value
-        # В .iss пути с обратными слэшами, а на macOS это не разделитель.
-        # Без замены проверка молча пропускала бы половину ошибок.
-        native = Path(candidate.replace("\\", "/"))
-        if (base / native).exists():
-            continue
-        # Не существует ни там, ни тут — это артефакт сборки
-        # (`dist\kurator` появляется только на Windows), и проверять его
-        # на macOS нечем.
-        if (ROOT / native).exists():
-            wrong.append(f"{value} → нашлось бы в {ROOT / native}")
-
-    assert not wrong, (
-        "пути в installer.iss указаны без ..\\ и потому ищутся не там: "
-        + "; ".join(wrong)
-        + ". Inno Setup считает относительные пути от каталога самого файла."
-    )
-
-
-def test_strip_is_off_on_windows():
-    """`strip` на Windows ломает бандл, и чинится это одной строкой.
-
-    PyInstaller на Windows зовёт `strip` из PATH — там находится GNU
-    strip — и применяет его к каждому бинарнику в `_internal`, включая
-    `python313.dll`. Приложение падало с кодом -1 и сообщением
-    `Failed to load Python DLL ... LoadLibrary: Invalid access to memory
-    location`: бинарник оказывался испорченным до запуска Python.
-
-    На macOS вызов правильный (`strip -S`), и там он нужен, поэтому
-    проверка не запрещает его вовсе, а требует явного `IS_MACOS`.
-    """
-    spec = (ROOT / "packaging" / "kurator.spec").read_text(encoding="utf-8")
-    assert "strip=IS_MACOS" in spec, (
-        "strip должен быть включён только на macOS. На Windows он портит "
-        "бинарники в бандле, и приложение не запускается вовсе."
-    )
-    assert "strip=True" not in spec, (
-        "strip=True включает его и на Windows, где он ломает бандл"
-    )
-
-
-def test_windows_build_verifies_the_bundle():
+def test_bundle_is_verified_by_running_it():
     """Сборка обязана проверять бандл, а не только создавать файл.
 
     Иначе приложение, которое собирается, но не открывается, считалось
@@ -261,20 +69,8 @@ def test_windows_build_verifies_the_bundle():
     assert "embedded" in text, "проверка не требует эмбеддингов"
     assert '"/"' in text or "index.html" in text, "проверка не требует главную страницу"
 
-    # Обе платформы действительно зовут проверку — но не обязательно из
-    # одного места. macOS зовёт её отдельным шагом воркфлоу, Windows —
-    # из build-windows.ps1, потому что там же собирается проверочный
-    # консольный вариант. Раньше тест считал упоминания в воркфлоу и
-    # требовал два, то есть требовал именно лишний второй запуск того
-    # же самого: он проверял не то, платформы ли проверяются, а где
-    # написана команда.
-    assert "verify_bundle.py dist\\kurator" in BUILD_WIN.read_text(encoding="utf-8"), (
-        "Windows-сборка не проверяет поставляемый бандл dist/kurator. "
-        "Проверка проверочного консольного варианта его не заменяет: "
-        "это другой исполняемый файл."
-    )
     workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
-    assert "verify_bundle.py" in workflow, "macOS-сборка не проверяет бандл"
+    assert "verify_bundle.py" in workflow, "сборка в CI не проверяет бандл"
 
 
 def test_runtime_stays_without_web_frameworks():
@@ -318,9 +114,9 @@ def test_runtime_stays_without_web_frameworks():
 def test_runtime_has_no_subprocess_after_all():
     """Сетевого и внешнего кода в рантайме быть не должно.
 
-    Дублирует проверку из test_cross_platform, но здесь она же рядом с
-    остальными проверками упаковки: если когда-нибудь придётся добавить
-    в spec `datas` или хук, правило про внешний код проверяется здесь же.
+    `sips` как источник даты был таким местом: подстановка команды,
+    которая вне macOS молча возвращала пустоту. Проверка смотрит по AST,
+    а не по тексту.
     """
     import ast
 
@@ -340,19 +136,3 @@ def test_runtime_has_no_subprocess_after_all():
                 offenders.append(f"{path.name}:{node.lineno}")
 
     assert not offenders, f"subprocess в рантайме: {offenders}"
-
-
-def test_icon_is_valid_ico_container():
-    """Файл должен быть читаемым ICO, а не просто называться так.
-
-    Сборка на Windows упала бы, но понятнее упасть здесь, чем на
-    `uv run python scripts/make_ico.py` у того, кто правит логотип.
-    """
-    from PIL import Image
-
-    data = ICO_TARGET.read_bytes()
-    # ICO начинается с нулевого резерва и единичного типа (1 = icon).
-    assert data[:4] == b"\x00\x00\x01\x00", "это не ICO"
-
-    with Image.open(io.BytesIO(data)) as image:
-        assert image.format == "ICO"
