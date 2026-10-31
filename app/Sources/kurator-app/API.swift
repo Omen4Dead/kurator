@@ -1,0 +1,182 @@
+import Foundation
+
+/// Управление python-бэкендом: приложение поднимает его процессом и
+/// гасит при выходе. Адрес и токен бэкенд сам пишет в
+/// ~/.kurator/instance.json — тот же след, что и при запуске из консоли.
+final class Backend {
+    private var process: Process?
+    private(set) var baseURL: URL?
+    private(set) var token: String = ""
+
+    struct Instance: Decodable {
+        let url: String
+        let pid: Int
+    }
+
+    private var instanceFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".kurator/instance.json")
+    }
+
+    /// Путь до исполняемого бэкенда: собранный kurator рядом с
+    /// приложением (в .app), либо `kurator` из PATH при разработке.
+    private func backendCommand() -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let custom = env["KURATOR_BACKEND"], !custom.isEmpty {
+            return custom
+        }
+        let bundled = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/MacOS/kurator").path
+        if FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+        // Разработка: репозиторий с uv-окружением.
+        if let repo = env["KURATOR_REPO"], !repo.isEmpty {
+            return "\(repo)/.venv/bin/kurator"
+        }
+        return ""
+    }
+
+    func start() async throws {
+        if baseURL != nil { return }
+        let command = backendCommand()
+        let proc = Process()
+        if command.isEmpty {
+            // Последний шанс — kurator из PATH.
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            proc.arguments = ["kurator", "ui", "--no-browser"]
+        } else if command.contains(" ") {
+            proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            proc.arguments = ["-c", "exec \(command) ui --no-browser"]
+        } else {
+            proc.executableURL = URL(fileURLWithPath: command)
+            proc.arguments = ["ui", "--no-browser"]
+        }
+        proc.standardOutput = nil
+        proc.standardError = nil
+        try proc.run()
+        process = proc
+        try await waitForInstance(expectedPid: Int(proc.processIdentifier))
+    }
+
+    private func waitForInstance(expectedPid: Int) async throws {
+        // Первый старт бэкенда занимает секунды: распаковка бандла,
+        // импорт библиотек. Ждём терпеливо, но не вечно.
+        for _ in 0..<600 {
+            if let data = try? Data(contentsOf: instanceFile),
+               let inst = try? JSONDecoder().decode(Instance.self, from: data),
+               inst.pid == expectedPid,
+               let url = URL(string: inst.url),
+               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            {
+                let token = comps.queryItems?
+                    .first(where: { $0.name == "token" })?.value ?? ""
+                if !token.isEmpty {
+                    var base = comps
+                    base.query = nil
+                    base.path = ""
+                    self.baseURL = base.url
+                    self.token = token
+                    return
+                }
+            }
+            if let proc = process, !proc.isRunning {
+                throw NSError(domain: "kurator", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "бэкенд завершился сразу после запуска"
+                ])
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        throw NSError(domain: "kurator", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "бэкенд не поднялся за две минуты"
+        ])
+    }
+
+    func stop() {
+        guard let proc = process, proc.isRunning else { return }
+        proc.terminate()
+        process = nil
+    }
+}
+
+enum APIError: LocalizedError {
+    case message(String)
+    case offline
+
+    var errorDescription: String? {
+        switch self {
+        case .message(let text): return text
+        case .offline: return "kurator больше не отвечает"
+        }
+    }
+}
+
+/// Тонкий клиент поверх URLSession. Токен уходит в заголовке — как это
+/// делает веб-интерфейс.
+struct API {
+    let baseURL: URL
+    let token: String
+
+    private func request(_ path: String, method: String = "GET",
+                         query: [URLQueryItem] = [], body: Data? = nil) -> URLRequest {
+        var comps = URLComponents(url: baseURL.appendingPathComponent(path),
+                                  resolvingAgainstBaseURL: false)!
+        if !query.isEmpty { comps.queryItems = query }
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = method
+        req.setValue(token, forHTTPHeaderField: "X-Kurator-Token")
+        if let body {
+            req.httpBody = body
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        return req
+    }
+
+    func call<T: Decodable>(_ path: String, method: String = "GET",
+                            query: [URLQueryItem] = [],
+                            json: [String: Any]? = nil) async throws -> T {
+        let data = try await raw(path, method: method, query: query, json: json)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// Ответы, у которых нет устойчивой формы (результаты действий),
+    /// разбираем словарём.
+    func callDict(_ path: String, method: String = "GET",
+                  query: [URLQueryItem] = [],
+                  json: [String: Any]? = nil) async throws -> [String: Any] {
+        let data = try await raw(path, method: method, query: query, json: json)
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    private func raw(_ path: String, method: String,
+                     query: [URLQueryItem], json: [String: Any]?) async throws -> Data {
+        let body = try json.map { try JSONSerialization.data(withJSONObject: $0) }
+        let req = request(path, method: method, query: query, body: body)
+        let data: Data, resp: URLResponse
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw APIError.offline
+        }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 403 { throw APIError.message("нет токена") }
+        if let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = payload["error"] as? String, code >= 400 {
+            throw APIError.message(error)
+        }
+        if code >= 400 { throw APIError.message("сервер ответил \(code)") }
+        return data
+    }
+
+    /// Адрес превью с токеном в строке: AsyncImage заголовков не ставит.
+    func thumbURL(_ rel: String, width: Int = 256) -> URL {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("/api/thumb"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "token", value: token),
+            URLQueryItem(name: "path", value: rel),
+            URLQueryItem(name: "w", value: String(width)),
+        ]
+        return comps.url!
+    }
+}
