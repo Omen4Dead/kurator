@@ -49,6 +49,11 @@ struct ContentView: View {
             }
             .buttonStyle(.borderless)
             .help("Сменить папку с фотографиями")
+            // Автоматическая подпись кнопки из вложенных Text считается
+            // один раз и не перечитывается при смене корня: сменил папку,
+            // а accessibility-дерево вечно показывает старую. Явная
+            // подпись пересчитывается вместе с model.root.
+            .accessibilityLabel("\(model.root.isEmpty ? "…" : model.root), сменить")
             Spacer()
             Button("Отчёт") { Task { await model.makeReport() } }
                 .buttonStyle(.borderless)

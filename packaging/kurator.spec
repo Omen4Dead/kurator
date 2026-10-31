@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Сборка kurator.app для macOS (Apple Silicon).
+"""Сборка python-бэкенда kurator для macOS (Apple Silicon).
+
+PyInstaller здесь собирает ТОЛЬКО бэкенд: onedir-каталог `dist/backend`
+с исполняемым `kurator`. Итоговое kurator.app собирает build.sh руками:
+главный исполняемый файл — нативный SwiftUI-бинарь из app/, а этот
+каталог уезжает в `Contents/Resources/backend/`.
 
 Запускается через packaging/build.sh, который и собирает, и подписывает,
 и делает установщик. Отдельно запускать не нужно.
@@ -24,20 +29,7 @@ binaries = collect_dynamic_libs("onnxruntime")
 
 # Модель на 90 МБ кладём рядом с интерпретатором: `config.default_model_path`
 # ищет её именно там, когда приложение собрано.
-# Веб-интерфейс — это три файла, которые сервер читает с диска по
-# пути. PyInstaller про импорты их не видит, и без явного объявления
-# приложение собирается, а отдаёт 404 на всё подряд.
-ASSETS_DIR = ROOT / "src" / "kurator" / "web" / "assets"
-if not (ASSETS_DIR / "index.html").is_file():
-    raise SystemExit(f"нет веб-интерфейса: {ASSETS_DIR}")
-
-datas = [(str(MODELS_DIR), "models"), (str(ASSETS_DIR), "kurator/web/assets")]
-
-# Значок. macOS принимает и .icns, и .png — но .icns лучше, потому что
-# система сама подберёт размер, а не растянет картинку.
-ICON = ROOT / "assets" / "kurator.icns"
-if not ICON.is_file():
-    raise SystemExit(f"нет значка: {ICON}")
+datas = [(str(MODELS_DIR), "models")]
 
 a = Analysis(
     [str(ROOT / "packaging" / "entry.py")],
@@ -72,12 +64,10 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="kurator",
-    # Приложение не консольное: работает через браузер, а stdout нужен
-    # только при диагностике сборки, и там его читает verify_bundle.py
-    # из трубы.
-    console=False,
+    # Бэкенд — консольный процесс: приложение запускает его само и читает
+    # его вывод, а окна у него нет.
+    console=True,
     disable_windowed_traceback=False,
-    icon=str(ICON),
 )
 
 coll = COLLECT(
@@ -88,23 +78,5 @@ coll = COLLECT(
     # меньше, а работа не меняется.
     strip=True,
     upx=False,
-    name="kurator",
-)
-
-app = BUNDLE(
-    coll,
-    name="kurator.app",
-    icon=str(ICON),
-    bundle_identifier="ru.omen4dead.kurator",
-    info_plist={
-        "CFBundleName": "kurator",
-        "CFBundleDisplayName": "kurator",
-        "CFBundleShortVersionString": "0.4.1",
-        "CFBundleVersion": "0.4.1",
-        "NSHighResolutionCapable": True,
-        "LSMinimumSystemVersion": "11.0",
-        # Приложение только слушает локальный порт и ходит в интернет
-        # не умеет вовсе: разрешать ему сеть незачем.
-        "NSAppTransportSecurity": {"NSAllowsArbitraryLoads": False},
-    },
+    name="backend",
 )

@@ -54,6 +54,9 @@ final class AppModel: ObservableObject {
             await loadFindings()
             await loadTrashCount()
         } catch {
+            // У оконного приложения нет консоли: дублируем в stderr, чтобы
+            // запуск из терминала показал причину, а в окне текст и так есть.
+            FileHandle.standardError.write(Data("kurator: \(error.localizedDescription)\n".utf8))
             self.error = error.localizedDescription
         }
     }

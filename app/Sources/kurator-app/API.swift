@@ -1,32 +1,22 @@
 import Foundation
 
 /// Управление python-бэкендом: приложение поднимает его процессом и
-/// гасит при выходе. Адрес и токен бэкенд сам пишет в
-/// ~/.kurator/instance.json — тот же след, что и при запуске из консоли.
+/// гасит при выходе. Никакого файла экземпляра: приложение само выбирает
+/// порт и токен и передаёт их бэкенду переменными окружения.
 final class Backend {
     private var process: Process?
     private(set) var baseURL: URL?
     private(set) var token: String = ""
 
-    struct Instance: Decodable {
-        let url: String
-        let pid: Int
-    }
-
-    private var instanceFile: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".kurator/instance.json")
-    }
-
-    /// Путь до исполняемого бэкенда: собранный kurator рядом с
-    /// приложением (в .app), либо `kurator` из PATH при разработке.
+    /// Путь до исполняемого бэкенда: собранный kurator внутри .app,
+    /// либо `kurator` из окружения при разработке.
     private func backendCommand() -> String {
         let env = ProcessInfo.processInfo.environment
         if let custom = env["KURATOR_BACKEND"], !custom.isEmpty {
             return custom
         }
         let bundled = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/MacOS/kurator").path
+            .appendingPathComponent("Contents/Resources/backend/kurator").path
         if FileManager.default.isExecutableFile(atPath: bundled) {
             return bundled
         }
@@ -37,53 +27,108 @@ final class Backend {
         return ""
     }
 
+    /// Свободный порт: спрашиваем у системы и сразу отпускаем. Между
+    /// этим и стартом бэкенда порт теоретически может занять другой
+    /// процесс — тогда бэкенд не поднимется, и мы скажем об этом честно.
+    private func freePort() throws -> Int {
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(sock) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let result = withUnsafeMutablePointer(to: &addr) { ptr -> (Int32, Int32) in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                let bound = bind(sock, sa, len)
+                let named = bound == 0 ? getsockname(sock, sa, &len) : -1
+                return (bound, named)
+            }
+        }
+        guard result.0 == 0, result.1 == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return Int(UInt16(bigEndian: addr.sin_port))
+    }
+
+    private func makeToken() -> String {
+        var bytes = [UInt8](repeating: 0, count: 24)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
     func start() async throws {
         if baseURL != nil { return }
+        let port = try freePort()
+        let token = makeToken()
         let command = backendCommand()
         let proc = Process()
+        var env = ProcessInfo.processInfo.environment
+        env["KURATOR_TOKEN"] = token
+        proc.environment = env
         if command.isEmpty {
             // Последний шанс — kurator из PATH.
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            proc.arguments = ["kurator", "ui", "--no-browser"]
+            proc.arguments = ["kurator", "ui", "--port", String(port)]
         } else if command.contains(" ") {
             proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            proc.arguments = ["-c", "exec \(command) ui --no-browser"]
+            proc.arguments = ["-c", "exec \(command) ui --port \(port)"]
         } else {
             proc.executableURL = URL(fileURLWithPath: command)
-            proc.arguments = ["ui", "--no-browser"]
+            proc.arguments = ["ui", "--port", String(port)]
         }
-        proc.standardOutput = nil
-        proc.standardError = nil
-        try proc.run()
+        // Вывод бэкенда пишем в файл: у оконного приложения stdout никуда
+        // не ведёт, и без этого файла падение бэкенда выглядит как
+        // «не поднялся» без единого слова о причине.
+        let fm = FileManager.default
+        let logURL = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent(".kurator/backend.log")
+        try? fm.createDirectory(at: logURL.deletingLastPathComponent(),
+                                withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: logURL.path) {
+            fm.createFile(atPath: logURL.path, contents: nil)
+        }
+        if let log = try? FileHandle(forWritingTo: logURL) {
+            log.seekToEndOfFile()
+            proc.standardOutput = log
+            proc.standardError = log
+        }
+        do {
+            try proc.run()
+        } catch {
+            throw NSError(domain: "kurator", code: 3, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "бэкенд не запустился (\(command.isEmpty ? "kurator из PATH" : command)): \(error.localizedDescription)"
+            ])
+        }
         process = proc
-        try await waitForInstance(expectedPid: Int(proc.processIdentifier))
+        try await waitForServer(port: port, token: token)
+        self.baseURL = URL(string: "http://127.0.0.1:\(port)")!
+        self.token = token
     }
 
-    private func waitForInstance(expectedPid: Int) async throws {
+    private func waitForServer(port: Int, token: String) async throws {
         // Первый старт бэкенда занимает секунды: распаковка бандла,
         // импорт библиотек. Ждём терпеливо, но не вечно.
+        let url = URL(string: "http://127.0.0.1:\(port)/api/state")!
+        var req = URLRequest(url: url)
+        req.setValue(token, forHTTPHeaderField: "X-Kurator-Token")
+        req.timeoutInterval = 2
         for _ in 0..<600 {
-            if let data = try? Data(contentsOf: instanceFile),
-               let inst = try? JSONDecoder().decode(Instance.self, from: data),
-               inst.pid == expectedPid,
-               let url = URL(string: inst.url),
-               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            {
-                let token = comps.queryItems?
-                    .first(where: { $0.name == "token" })?.value ?? ""
-                if !token.isEmpty {
-                    var base = comps
-                    base.query = nil
-                    base.path = ""
-                    self.baseURL = base.url
-                    self.token = token
-                    return
-                }
-            }
             if let proc = process, !proc.isRunning {
                 throw NSError(domain: "kurator", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "бэкенд завершился сразу после запуска"
                 ])
+            }
+            if let (_, resp) = try? await URLSession.shared.data(for: req),
+               (resp as? HTTPURLResponse)?.statusCode == 200 {
+                return
             }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
@@ -111,8 +156,7 @@ enum APIError: LocalizedError {
     }
 }
 
-/// Тонкий клиент поверх URLSession. Токен уходит в заголовке — как это
-/// делает веб-интерфейс.
+/// Тонкий клиент поверх URLSession. Токен уходит в заголовке.
 struct API {
     let baseURL: URL
     let token: String

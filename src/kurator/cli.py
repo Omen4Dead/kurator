@@ -329,7 +329,7 @@ def cmd_ui(args) -> int:
         if not root.is_dir():
             raise SystemExit(f"нет такой папки: {root}")
     port = resolve_port(args.port)
-    serve(root, host="127.0.0.1", port=port, open_browser=not args.no_browser)
+    serve(root, host="127.0.0.1", port=port)
     return 0
 
 
@@ -528,13 +528,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tuning_flags(p)
     p.set_defaults(func=cmd_evaluate)
 
-    p = sub.add_parser("ui", help="локальный веб-интерфейс в браузере")
+    p = sub.add_parser("ui", help="поднять API-бэкенд (так его запускает приложение)")
     p.add_argument(
         "root", nargs="?", default=".",
-        help="папка с фотографиями; без неё откроется та, что была в прошлый раз",
+        help="папка с фотографиями; без неё возьмётся та, что была в прошлый раз",
     )
     p.add_argument("--port", type=int, default=8765, help="порт (берёт следующий свободный)")
-    p.add_argument("--no-browser", action="store_true", help="не открывать браузер самому")
     p.set_defaults(func=cmd_ui)
 
     p = sub.add_parser("calibrate", help="подобрать пороги near-дублей по своим фото")

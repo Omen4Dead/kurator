@@ -1,22 +1,21 @@
-"""HTTP-сервер и API локального интерфейса kurator.
+"""HTTP-сервер и API локального бэкенда kurator.
 
 Только стандартная библиотека. Слушает исключительно 127.0.0.1 и требует
-сессионный токен в заголовке, чтобы случайная страница в браузере не могла
-обратиться к локальному серверу.
+сессионный токен в заголовке, чтобы случайный процесс не мог обратиться
+к локальному серверу. Клиент один — нативное приложение: оно поднимает
+бэкенд процессом, передаёт токен через KURATOR_TOKEN и гасит его при
+выходе.
 """
 
 from __future__ import annotations
 
 import io
 import json
-import mimetypes
 import os
 import sqlite3
 import secrets
 import threading
 import time
-import urllib.request
-import webbrowser
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
@@ -38,15 +37,6 @@ from ..config import (
 )
 from ..db import Store
 from ..encoder import SiglipVision, model_is_present
-
-ASSETS = Path(__file__).resolve().parent / "assets"
-
-CONTENT_TYPES = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".svg": "image/svg+xml",
-}
 
 THUMB_CACHE_LIMIT = 400
 THUMB_WIDTHS = (128, 256, 512)
@@ -79,14 +69,8 @@ trace("модуль kurator.web.server загружен")
 
 
 HISTORY_FILENAME = "roots.json"
-INSTANCE_FILENAME = "instance.json"
 
 DEFAULT_PORT = 8765
-# Сколько ждать, пока вкладка не появится, и сколько после её закрытия.
-# Приложение без вкладки — процесс без работы: он держит модель и индекс
-# в памяти, но пользы от него нет. Ждать нужно не мгновенно: перезагрузка
-# страницы и переключение между двумя вкладками тоже выглядят как закрытие.
-IDLE_SHUTDOWN_SECONDS = 180
 
 
 def state_dir() -> Path:
@@ -95,86 +79,6 @@ def state_dir() -> Path:
 
 def history_path() -> Path:
     return state_dir() / HISTORY_FILENAME
-
-
-def instance_path() -> Path:
-    return state_dir() / INSTANCE_FILENAME
-
-
-def write_instance(payload: dict) -> None:
-    """Оставить след живого экземпляра, чтобы второй запуск его нашёл.
-
-    Токен из этого файла открывает интерфейс, поэтому права заужены: файл
-    лежит в домашней папке и читать его должен только владелец.
-    """
-    path = instance_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        os.chmod(path, 0o600)
-    except OSError:
-        # Записать не смогли — работаем без следа. Приложение при этом
-        # запускается, просто второй запуск его не найдёт и скажет об
-        # этом прямо.
-        pass
-
-
-def clear_instance(pid: int | None = None) -> None:
-    """Снять след, но только свой.
-
-    Без проверки pid след стирал любой, кто первым остановится: два
-    запущенных kurator — с разными папками — мешали бы друг другу, и
-    следующий щелчок по значку решил бы, что приложение уже работает, а
-    второго процесса нет. Заодно это делало тесты недетерминированными:
-    сервер из прошлого теста мог снести след текущего.
-    """
-    path = instance_path()
-    if pid is not None:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # ValueError, а не только JSONDecodeError: UnicodeDecodeError — тоже он,
-            # а на томе exFAT рядом с json лежит служебный `._имя`, и он не utf-8.
-            return
-        if not isinstance(payload, dict) or payload.get("pid") != pid:
-            return
-    try:
-        path.unlink()
-    except OSError:
-        pass
-
-
-def live_instance() -> dict | None:
-    """Есть ли уже работающий kurator и чем его открыть.
-
-    Проверяется не pid, а живой ответ на порту: pid мог достаться другому
-    процессу, а экземпляр мог погибнуть, не сняв след с диска.
-
-    Тело страницы проверяется на `KURATOR_TOKEN`: порт мог занять кто-то
-    ещё, и открывать пользователю чужую страницу нельзя.
-    """
-    try:
-        payload = json.loads(instance_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        # ValueError, а не только JSONDecodeError: UnicodeDecodeError — тоже он,
-        # а на томе exFAT рядом с json лежит служебный `._имя`, и он не utf-8.
-        return None
-    url = payload.get("url") if isinstance(payload, dict) else None
-    if not isinstance(url, str) or not url:
-        return None
-
-    try:
-        with urllib.request.urlopen(url, timeout=2) as response:
-            # Страница читается целиком: метка с токеном стоит в самом
-            # конце index.html, и при чтении первых 4 КБ её не видно —
-            # поиск молча проваливался, и второй запуск падал на занятом
-            # порту точно так же, как до появления этой проверки.
-            body = response.read(65536).decode("utf-8", "replace")
-    except Exception:
-        return None
-    if "KURATOR_TOKEN" not in body:
-        return None
-    return payload
 
 
 def read_history() -> list[str]:
@@ -323,41 +227,23 @@ class _Server(ThreadingHTTPServer):
 
 
 class State:
-    def __init__(self, root: Path, model_path: Path) -> None:
+    def __init__(self, root: Path, model_path: Path, token: str | None = None) -> None:
         self.model_path = model_path
-        self.token = secrets.token_urlsafe(24)
+        # Токен приходит от приложения через переменную окружения: приложение
+        # сама его сгенерировала и никому больше не показывает. Без env
+        # (тесты, консольный запуск) — выдумываем сами; для отладки сервер
+        # его печатает при старте.
+        self.token = token or os.environ.get("KURATOR_TOKEN") or secrets.token_urlsafe(24)
         self.lock = threading.RLock()
         self.encoder: SiglipVision | None = None
         self.job: dict | None = None
         self.thumbs: OrderedDict[tuple[str, int], bytes] = OrderedDict()
         self._stop = threading.Event()
-        # Сколько вкладок сейчас открыто. Каждая представляется при загрузке
-        # и прощается при закрытии; по этому счётчику сторож понимает, что
-        # приложением больше не пользуются.
-        self._clients = 0
         self.root = root.resolve()
         self.store = Store.open(self.root)
         # Как погасить сервер. Заполняется в serve(): сам сервер туда
         # положить не может, он появляется позже.
         self.stop_server: Callable[[], None] | None = None
-
-    @property
-    def clients(self) -> int:
-        with self.lock:
-            return self._clients
-
-    def add_client(self) -> int:
-        """Вкладка открылась."""
-        with self.lock:
-            self._clients += 1
-            return self._clients
-
-    def drop_client(self) -> int:
-        """Вкладка закрылась. Больше нуля не бывает — иначе счётчик уедет
-        после перезагрузки страницы, где уход и приход могут не совпасть."""
-        with self.lock:
-            self._clients = max(0, self._clients - 1)
-            return self._clients
 
     def stopping(self) -> bool:
         return self._stop.is_set()
@@ -550,22 +436,6 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, payload, code: int = 200) -> None:
         self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json")
 
-    def _asset(self, name: str) -> None:
-        path = (ASSETS / name).resolve()
-        try:
-            path.relative_to(ASSETS.resolve())
-        except ValueError:
-            self._send(403, b"forbidden", "text/plain")
-            return
-        if not path.is_file():
-            self._send(404, b"not found", "text/plain")
-            return
-        body = path.read_bytes()
-        if name == "index.html":
-            body = body.replace(b"__KURATOR_TOKEN__", self.state.token.encode())
-        suffix = path.suffix.lower()
-        self._send(200, body, CONTENT_TYPES.get(suffix, "application/octet-stream"))
-
     def _authorized(self, query: dict) -> bool:
         token = self.headers.get("X-Kurator-Token") or (query.get("token") or [""])[0]
         return secrets.compare_digest(token or "", self.state.token)
@@ -575,12 +445,6 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         query = parse_qs(parsed.query)
 
-        if route in ("/", "/index.html"):
-            self._asset("index.html")
-            return
-        if route in ("/app.js", "/style.css"):
-            self._asset(route.lstrip("/"))
-            return
         if not self._authorized(query):
             self._json({"error": "нет токена"}, 403)
             return
@@ -588,6 +452,16 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/state":
             store = self.state.store
             photos = store.photos()
+            # last_index_at хранится строкой (так сложилось в meta), а
+            # created_at пропусков — REAL. Наружу оба уходят целыми:
+            # нативный клиент разбирает JSON строго, и число с точкой
+            # роняет декодирование ответа целиком.
+            raw_last = store.get_meta("last_index_at")
+            last_index_at = int(raw_last) if raw_last and str(raw_last).isdigit() else None
+            skipped_groups = [
+                {**g, "created_at": int(g["created_at"])}
+                for g in store.skipped_groups()
+            ]
             self._json(
                 {
                     "root": str(self.state.root),
@@ -612,8 +486,8 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     "quarantine": QUARANTINE_DIRNAME,
                     "skipped": len(store.skipped()),
-                    "skipped_groups": store.skipped_groups(),
-                    "last_index_at": store.get_meta("last_index_at"),
+                    "skipped_groups": skipped_groups,
+                    "last_index_at": last_index_at,
                     "job": self.state.job,
                 }
             )
@@ -772,22 +646,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(result)
             return
 
-        if route == "/api/hello":
-            # Вкладка открылась. Без этого счётчика приложение не знает,
-            # что им пользуются, и по простою выключится под открытой
-            # страницей.
-            self._json({"clients": self.state.add_client()})
-            return
-
-        if route == "/api/bye":
-            # Вкладка закрылась. Ставится из браузера через sendBeacon
-            # при уходе со страницы, поэтому ответ никому не нужен.
-            self._json({"clients": self.state.drop_client()})
-            return
-
         if route == "/api/quit":
             # Отвечаем сразу, а гасим сервер чуть позже: иначе ответ
-            # не успеет уйти и браузер увидит оборванное соединение
+            # не успеет уйти и приложение увидит оборванное соединение
             # вместо подтверждения.
             self._json({"quitting": True})
             try:
@@ -955,64 +816,21 @@ def default_root() -> tuple[Path, str]:
     return Path.home(), "домашняя папка"
 
 
-def _idle_watchdog(state: "State", httpd, timeout: float) -> None:
-    """Выключить сервер, если вкладок не осталось.
-
-    Приложение без открытой вкладки — это процесс, который держит модель
-    и индекс в памяти, но ничего не делает. Пользователь закрыл вкладку и
-    ушёл, а процесс остался висеть до следующего запуска, который к тому
-    моменту уже не мог пройти.
-
-    Проверка идёт каждые 5 секунд, само выключение — через `timeout`
-    секунд после последнего ухода вкладки. Пауза нужна для перезагрузки
-    страницы и для переключения между двумя вкладками: обе выглядят как
-    «вкладок нет», но ни одну из них закрывать не хочется.
-    """
-    deadline = None
-    while not state.stopping():
-        if state.clients > 0:
-            deadline = None
-        elif deadline is None:
-            deadline = time.monotonic() + timeout
-        elif time.monotonic() >= deadline:
-            print("\nвкладок не осталось — останавливаюсь")
-            httpd.shutdown()
-            return
-        time.sleep(5)
-
-
 def serve(
     root: Path | None,
     host: str = "127.0.0.1",
     port: int = DEFAULT_PORT,
-    open_browser: bool = True,
-    idle_timeout: float | None = None,
+    token: str | None = None,
 ) -> None:
-    """Поднять локальный интерфейс и держать его, пока он нужен.
+    """Поднять локальный API и держать его, пока процесс не остановят.
 
-    `idle_timeout` — через сколько секунд без вкладки выключаться. Для
-    приложения это осмысленно: закрыл вкладку — значит закончил. Для
-    консоли нет, там сервер запускают руками и им пользуются без вкладки,
-    поэтому по умолчанию значение None.
-
-    Повторный запуск приложения, когда экземпляр уже жив, не поднимает
-    второй сервер, а открывает окно первого. Иначе вышло бы два процесса
-    с двумя копиями модели в памяти — ровно то, на что жаловался
-    пользователь, только сдвоенное.
+    Клиент один — нативное приложение: оно запускает бэкенд процессом,
+    передаёт токен через KURATOR_TOKEN (или принимает сгенерированный)
+    и само завершает его при выходе. Параметр `token` нужен тестам,
+    чтобы не лезть в окружение процесса.
     """
     trace(f"serve(): начало, корень задан: {root is not None}")
     if root is None:
-        # Запуск без папки — это клик по иконке. Папку не передавали,
-        # значит и второй экземпляр пользователю не нужен: он хотел
-        # посмотреть тот, который уже открыт.
-        running = live_instance()
-        trace(f"живой экземпляр: {running}")
-        if running is not None:
-            print(f"kurator {__version__}")
-            print("уже запущен — открываю его окно")
-            if open_browser:
-                webbrowser.open(running["url"])
-            return
         root, source = default_root()
     else:
         source = "из командной строки"
@@ -1021,7 +839,7 @@ def serve(
     if model_path.is_dir():
         model_path = model_path / MODEL_FILENAME
     trace(f"адрес модели: {model_path}")
-    state = State(root, model_path)
+    state = State(root, model_path, token=token)
     trace("состояние создано, база открыта")
     remember_root(state.root)
     trace("корень запомнен")
@@ -1031,24 +849,17 @@ def serve(
     state.stop_server = httpd.shutdown
     trace(f"сокет привязан: {host}:{port}")
 
-    url = f"http://{host}:{port}/?token={state.token}"
-    write_instance({"url": url, "pid": os.getpid(), "port": port, "root": str(state.root)})
-    trace("экземпляр записан")
-    print(f"kurator {__version__}")
-    print(f"корень : {state.root}  ({source})")
-    print(f"модель : {model_path} {'(на месте)' if state.embedder_available() else '(нет: только хеши)'}")
-    print(f"открываю {url}")
-    print("Ctrl+C — остановить")
-    if open_browser:
-        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
-    watchdog = None
-    if idle_timeout:
-        watchdog = threading.Thread(
-            target=_idle_watchdog,
-            args=(state, httpd, float(idle_timeout)),
-            daemon=True,
-        )
-        watchdog.start()
+    # stdout приложения уходит в файл (приложение само его открывает),
+    # а не в терминал, поэтому без flush=True строки копятся в буфере и
+    # журнал пуст ровно тогда, когда он нужен — при раннем падении.
+    print(f"kurator {__version__}", flush=True)
+    print(f"корень : {state.root}  ({source})", flush=True)
+    print(f"модель : {model_path} {'(на месте)' if state.embedder_available() else '(нет: только хеши)'}", flush=True)
+    print(f"слушаю http://{host}:{port}", flush=True)
+    # Токен печатается для консольной отладки (curl, разработка интерфейса).
+    # Приложению он не нужен: оно задало его само через окружение.
+    print(f"токен  : {state.token}", flush=True)
+    print("Ctrl+C — остановить", flush=True)
 
     try:
         trace("слушаю")
@@ -1057,7 +868,6 @@ def serve(
         print("\nостанавливаюсь")
     finally:
         trace("останавливаюсь")
-        clear_instance(os.getpid())
         state.close()
         httpd.server_close()
         print("остановлено")
@@ -1074,6 +884,3 @@ def resolve_port(preferred: int) -> int:
                 continue
             return port
     raise SystemExit("не нашёл свободный порт")
-
-
-mimetypes.add_type("text/javascript", ".js")
