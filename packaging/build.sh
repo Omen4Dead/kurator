@@ -74,9 +74,9 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleDisplayName</key>
   <string>kurator</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.6.0</string>
+  <string>0.6.1</string>
   <key>CFBundleVersion</key>
-  <string>0.6.0</string>
+  <string>0.6.1</string>
   <key>CFBundleIconFile</key>
   <string>kurator</string>
   <key>CFBundlePackageType</key>

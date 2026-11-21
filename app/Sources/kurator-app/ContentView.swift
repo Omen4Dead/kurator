@@ -140,8 +140,34 @@ struct ContentView: View {
                     .background(model.tab == tab ? Color.accentColor.opacity(0.15) : .clear)
             }
             Spacer()
+            // Кнопка страницы — в строке вкладок: в списке она уезжала
+            // при прокрутке, а разбирают архив именно сверху вниз.
+            if model.tab != .clusters {
+                Button("Отправить страницу в карантин (\(pageChosen.count))", role: .destructive) {
+                    Task { await model.removePageSelection(pagedGroups.slice) }
+                }
+                .disabled(pageChosen.isEmpty)
+                .help("Переносит в карантин ровно те кадры, что отмечены на этой странице")
+            }
         }
         .padding(.horizontal)
+    }
+
+    /// Раскладка текущей вкладки на страницы — общая для кнопки в
+    /// строке вкладок и списка ниже: считаем один раз, чтобы оба видели
+    /// одну и ту же десятку.
+    private var pagedGroups: (all: [FindingGroup], slice: [FindingGroup], pageCount: Int, page: Int) {
+        let all = model.groups.filter { $0.kind == model.tab.rawValue }
+        let perPage = AppModel.groupsPerPage
+        let pageCount = max(1, (all.count + perPage - 1) / perPage)
+        let page = min(model.page(for: model.tab), pageCount - 1)
+        let slice = Array(all[page * perPage ..< min(all.count, (page + 1) * perPage)])
+        return (all, slice, pageCount, page)
+    }
+
+    private var pageChosen: [String] {
+        pagedGroups.slice.filter { model.skipped[$0.sig] == nil }
+            .flatMap { model.selectedPaths($0) }
     }
 
     @ViewBuilder
@@ -200,10 +226,11 @@ struct ContentView: View {
         } else {
             // Страницы по 10 групп: сотни карточек с превью разом едят
             // память, а разбирают архив всё равно по одной группе.
+            let all = pagedGroups.all
             let perPage = AppModel.groupsPerPage
-            let pageCount = max(1, (all.count + perPage - 1) / perPage)
-            let page = min(model.page(for: model.tab), pageCount - 1)
-            let slice = Array(all[page * perPage ..< min(all.count, (page + 1) * perPage)])
+            let pageCount = pagedGroups.pageCount
+            let page = pagedGroups.page
+            let slice = pagedGroups.slice
             let live = all.filter { model.skipped[$0.sig] == nil }
             let total = live.reduce(Int64(0)) { sum, g in
                 sum + g.files.filter { model.isSelected(g, $0.path) }
@@ -215,19 +242,9 @@ struct ContentView: View {
                   (all.count > live.count
                     ? ", ещё \(all.count - live.count) оставлены как есть" : "") +
                   " · отмечено на \(fmtBytes(total))"
-            let pageChosen = slice.filter { model.skipped[$0.sig] == nil }
-                .flatMap { model.selectedPaths($0) }
-            HStack(alignment: .firstTextBaseline) {
-                Text(headline + ".")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Отправить страницу в карантин (\(pageChosen.count))", role: .destructive) {
-                    Task { await model.removePageSelection(slice) }
-                }
-                .disabled(pageChosen.isEmpty)
-                .help("Переносит в карантин ровно те кадры, что отмечены на этой странице")
-            }
+            Text(headline + ".")
+                .font(.callout)
+                .foregroundStyle(.secondary)
             if !live.isEmpty {
                 Text("Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить другой кадр, снимите ✓ здесь и поставьте там.")
                     .font(.caption)
@@ -285,15 +302,16 @@ struct ContentView: View {
     }
 }
 
-/// Сторона превью в точках. Была 128, поднята на 10% по просьбе —
-/// пропорционально поднята и ширина запроса к серверу.
-let thumbSide: CGFloat = 141
+/// Сторона превью в точках: было 128, подняли до 141 (+10%), сейчас
+/// 162 (+15% сверх того). Ширина запроса к серверу поднята
+/// пропорционально — иначе на Retina мыло.
+let thumbSide: CGFloat = 162
 
 /// Превью с сервера. AsyncImage сам кеширует, токен — в адресе.
 struct ThumbView: View {
     @EnvironmentObject var model: AppModel
     let rel: String
-    var width: Int = 280
+    var width: Int = 324
 
     var body: some View {
         if let api = model.api {
