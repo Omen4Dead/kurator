@@ -144,7 +144,7 @@ struct ContentView: View {
             // при прокрутке, а разбирают архив именно сверху вниз.
             if model.tab != .clusters {
                 Button("Отправить страницу в карантин (\(pageChosen.count))", role: .destructive) {
-                    Task { await model.removePageSelection(pagedGroups.slice) }
+                    Task { await model.removePaths(pageChosen) }
                 }
                 .disabled(pageChosen.isEmpty)
                 .help("Переносит в карантин ровно те кадры, что отмечены на этой странице")
