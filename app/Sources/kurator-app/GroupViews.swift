@@ -22,7 +22,7 @@ struct GroupCardView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: thumbSide), spacing: 8)], spacing: 8) {
                     ForEach(group.files) { file in
                         TileView(group: group, file: file)
                     }
@@ -75,7 +75,21 @@ struct TileView: View {
         let picked = model.isSelected(group, file.path)
         ZStack(alignment: .topLeading) {
             VStack(spacing: 2) {
-                ThumbView(rel: file.path)
+                ZStack(alignment: .bottomTrailing) {
+                    ThumbView(rel: file.path)
+                    Button { model.revealInFinder(file.path) } label: {
+                        Image(systemName: "folder")
+                            .font(.caption)
+                            .padding(5)
+                            .background(.regularMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(4)
+                    .help("Показать в Finder")
+                    // Иначе AX подхватывает системное имя символа folder —
+                    // «Переместить», что путает и VoiceOver, и автотесты.
+                    .accessibilityLabel("Показать в Finder")
+                }
                 Text(file.path.split(separator: "/").last.map(String.init) ?? file.path)
                     .font(.caption2)
                     .lineLimit(1)

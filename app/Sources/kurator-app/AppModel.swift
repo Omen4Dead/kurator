@@ -27,6 +27,17 @@ final class AppModel: ObservableObject {
     @Published var showRehash = false
     @Published var rehashCost = ""
     @Published var error: String?
+    /// Номер страницы по вкладке («Похожие» и «Точные дубли» листаются
+    /// по 10 групп — иначе окно рендерит сотни превью разом).
+    @Published var pages: [String: Int] = [:]
+
+    static let groupsPerPage = 10
+
+    func page(for tab: Tab) -> Int { pages[tab.rawValue] ?? 0 }
+
+    func setPage(_ tab: Tab, _ n: Int) {
+        pages[tab.rawValue] = max(0, n)
+    }
 
     private var jobTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
@@ -192,6 +203,14 @@ final class AppModel: ObservableObject {
 
     // MARK: - решения по группам
 
+    /// Всё отмеченное на странице — в карантин. Семантика галочек не
+    /// меняется: у каждой группы по-прежнему можно снять все отметки или
+    /// отметить оба кадра, переносится ровно то, что отмечено.
+    func removePageSelection(_ pageGroups: [FindingGroup]) async {
+        let paths = pageGroups.flatMap { selectedPaths($0) }
+        await decide(paths, action: "remove")
+    }
+
     func isSelected(_ group: FindingGroup, _ path: String) -> Bool {
         if let chosen = selected[group.sig] { return chosen.contains(path) }
         return group.files.contains { $0.path == path && $0.role != "keeper" }
@@ -259,6 +278,14 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - прочее
+
+    /// Показать файл в Finder — единственный способ из приложения дойти
+    /// до оригинала руками.
+    func revealInFinder(_ rel: String) {
+        guard !root.isEmpty else { return }
+        let url = URL(fileURLWithPath: root).appendingPathComponent(rel)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
 
     func makeReport() async {
         guard let api,
