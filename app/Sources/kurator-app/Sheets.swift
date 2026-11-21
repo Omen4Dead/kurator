@@ -206,7 +206,9 @@ struct TrashView: View {
     private func runRestore() async {
         guard let api = model.api else { return }
         let restorable = Set(items.filter { !$0.orphan }.map(\.key))
-        let keys = chosen.filter { restorable.contains($0) }
+        // Внимание: filter на Set возвращает Set, а JSONSerialization
+        // Swift-Set не жуёт — приложение падает на encode (0.24).
+        let keys = Array(chosen).filter { restorable.contains($0) }
         do {
             let result = try await api.callDict("/api/trash/restore", method: "POST",
                                                 json: ["keys": keys])

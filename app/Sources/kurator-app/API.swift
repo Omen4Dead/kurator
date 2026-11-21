@@ -194,7 +194,15 @@ struct API {
 
     private func raw(_ path: String, method: String,
                      query: [URLQueryItem], json: [String: Any]?) async throws -> Data {
-        let body = try json.map { try JSONSerialization.data(withJSONObject: $0) }
+        // Ошибка кодирования не должна ронять приложение: NSException из
+        // JSONSerialization ловится только здесь (0.24 — падал возврат
+        // из корзины на Swift-Set в теле запроса).
+        let body: Data?
+        do {
+            body = try json.map { try JSONSerialization.data(withJSONObject: $0) }
+        } catch {
+            throw APIError.message("не удалось собрать запрос: \(error.localizedDescription)")
+        }
         let req = request(path, method: method, query: query, body: body)
         let data: Data, resp: URLResponse
         do {
