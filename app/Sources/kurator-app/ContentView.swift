@@ -198,6 +198,12 @@ struct ContentView: View {
             Text("Здесь пусто. Проверь индекс или открой другую вкладку.")
                 .foregroundStyle(.secondary)
         } else {
+            // Страницы по 10 групп: сотни карточек с превью разом едят
+            // память, а разбирают архив всё равно по одной группе.
+            let perPage = AppModel.groupsPerPage
+            let pageCount = max(1, (all.count + perPage - 1) / perPage)
+            let page = min(model.page(for: model.tab), pageCount - 1)
+            let slice = Array(all[page * perPage ..< min(all.count, (page + 1) * perPage)])
             let live = all.filter { model.skipped[$0.sig] == nil }
             let total = live.reduce(Int64(0)) { sum, g in
                 sum + g.files.filter { model.isSelected(g, $0.path) }
@@ -209,26 +215,60 @@ struct ContentView: View {
                   (all.count > live.count
                     ? ", ещё \(all.count - live.count) оставлены как есть" : "") +
                   " · отмечено на \(fmtBytes(total))"
-            Text(headline + ".")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            let pageChosen = slice.filter { model.skipped[$0.sig] == nil }
+                .flatMap { model.selectedPaths($0) }
+            HStack(alignment: .firstTextBaseline) {
+                Text(headline + ".")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Отправить страницу в карантин (\(pageChosen.count))", role: .destructive) {
+                    Task { await model.removePageSelection(slice) }
+                }
+                .disabled(pageChosen.isEmpty)
+                .help("Переносит в карантин ровно те кадры, что отмечены на этой странице")
+            }
             if !live.isEmpty {
                 Text("Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить другой кадр, снимите ✓ здесь и поставьте там.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            ForEach(Array(all.enumerated()), id: \.element.id) { i, group in
+            if pageCount > 1 {
+                HStack {
+                    Button("←") { model.setPage(model.tab, page - 1) }
+                        .disabled(page == 0)
+                    Text("Страница \(page + 1) из \(pageCount)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("→") { model.setPage(model.tab, page + 1) }
+                        .disabled(page >= pageCount - 1)
+                    Spacer()
+                }
+            }
+            ForEach(Array(slice.enumerated()), id: \.element.id) { i, group in
                 if let stamp = model.skipped[group.sig] {
                     SkippedStrip(group: group, createdAt: stamp ?? nil)
                 } else {
-                    GroupCardView(group: group, index: i)
+                    GroupCardView(group: group, index: page * perPage + i)
+                }
+            }
+            if pageCount > 1 {
+                HStack {
+                    Button("←") { model.setPage(model.tab, page - 1) }
+                        .disabled(page == 0)
+                    Text("Страница \(page + 1) из \(pageCount)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("→") { model.setPage(model.tab, page + 1) }
+                        .disabled(page >= pageCount - 1)
+                    Spacer()
                 }
             }
         }
     }
 
     private var tileColumns: [GridItem] {
-        [GridItem(.adaptive(minimum: 128), spacing: 8)]
+        [GridItem(.adaptive(minimum: thumbSide), spacing: 8)]
     }
 
     @ViewBuilder
@@ -245,11 +285,15 @@ struct ContentView: View {
     }
 }
 
+/// Сторона превью в точках. Была 128, поднята на 10% по просьбе —
+/// пропорционально поднята и ширина запроса к серверу.
+let thumbSide: CGFloat = 141
+
 /// Превью с сервера. AsyncImage сам кеширует, токен — в адресе.
 struct ThumbView: View {
     @EnvironmentObject var model: AppModel
     let rel: String
-    var width: Int = 256
+    var width: Int = 280
 
     var body: some View {
         if let api = model.api {
@@ -261,9 +305,12 @@ struct ThumbView: View {
                     Color.secondary.opacity(0.15)
                 }
             }
-            .frame(width: 128, height: 128)
+            .frame(width: thumbSide, height: thumbSide)
             .clipped()
             .cornerRadius(6)
+            .contextMenu {
+                Button("Показать в Finder") { model.revealInFinder(rel) }
+            }
         }
     }
 }
