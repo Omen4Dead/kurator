@@ -122,30 +122,3 @@ struct TileView: View {
         return parts.joined(separator: " · ")
     }
 }
-
-/// Полоса «оставлено как есть» вместо карточки пропущенной группы.
-struct SkippedStrip: View {
-    @EnvironmentObject var model: AppModel
-    let group: FindingGroup
-    let createdAt: Int?
-
-    var body: some View {
-        HStack {
-            Text("оставлено как есть")
-                .foregroundStyle(.secondary)
-            Text(group.keeper ?? group.members.first ?? "")
-                .lineLimit(1)
-            Text("\(group.size) файла(ов)" +
-                 (createdAt.map { " · скрыто \(whenRu($0))" } ?? ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("Вернуть в разбор") {
-                Task { await model.unskip(group.sig) }
-            }
-            .buttonStyle(.borderless)
-        }
-        .padding(8)
-        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-    }
-}

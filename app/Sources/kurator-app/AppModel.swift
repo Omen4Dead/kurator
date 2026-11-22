@@ -253,14 +253,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func unskip(_ sig: String) async {
-        guard let api else { return }
-        _ = try? await api.callDict("/api/decide", method: "POST",
-                                json: ["action": "unskip", "paths": [String](), "sig": sig])
-        showToast("группа вернулась в разбор")
-        await loadState()
-    }
-
     // MARK: - корень
 
     func switchRoot(_ path: String) async {

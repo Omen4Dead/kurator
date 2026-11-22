@@ -86,9 +86,9 @@ struct ContentView: View {
             }
             HStack {
                 tuningField("Похожесть кадра", text: $model.phash,
-                            hint: "Меньше — строже. Сравнивается кадр: свет, тень, расположение.")
+                            hint: "Сравнивается сам кадр: свет, тень, резкость, расположение объектов. Это расстояние между хешами — чем меньше число, тем строже отбор: уменьшишь, и в «Похожие» попадут только почти одинаковые кадры; увеличишь — добавятся кадры с той же композицией при другом свете. Заводское значение — 4.")
                 tuningField("Похожесть содержания", text: $model.cosine,
-                            hint: "Больше — строже. Сравнивается, что изображено. Если непонятно — оставьте 0.9.")
+                            hint: "Сравнивается, что изображено — сюжет кадра. Это сходство по смыслу — чем больше число, тем строже: увеличишь, и рядом окажутся только кадры с одинаковым содержимым; уменьшишь — добавятся разные кадры похожей сцены. Если непонятно — оставьте 0.9.")
                 Button("сбросить") { Task { await model.resetFactory() } }
                     .buttonStyle(.borderless)
                 Text("Оба меняют строгость, но в разные стороны")
@@ -124,9 +124,9 @@ struct ContentView: View {
                         await model.loadFindings()
                     }
                 }
-            Image(systemName: "questionmark.circle")
-                .foregroundStyle(.secondary)
-                .help(hint)
+            // Нативный .help на macOS показывает подсказку нестабильно
+            // (и не кликабелен) — делаем явную кнопку с поповером.
+            HintButton(hint: hint)
         }
     }
 
@@ -155,19 +155,21 @@ struct ContentView: View {
 
     /// Раскладка текущей вкладки на страницы — общая для кнопки в
     /// строке вкладок и списка ниже: считаем один раз, чтобы оба видели
-    /// одну и ту же десятку.
-    private var pagedGroups: (all: [FindingGroup], slice: [FindingGroup], pageCount: Int, page: Int) {
-        let all = model.groups.filter { $0.kind == model.tab.rawValue }
+    /// одну и ту же десятку. Пропущенные группы в раскладку не входят:
+    /// после «Оставить оба» группа исчезает со страницы, назад её
+    /// возвращает только «Вернуть пропущенные» сверху.
+    private var pagedGroups: (all: [FindingGroup], skipped: Int, slice: [FindingGroup], pageCount: Int, page: Int) {
+        let kindGroups = model.groups.filter { $0.kind == model.tab.rawValue }
+        let all = kindGroups.filter { model.skipped[$0.sig] == nil }
         let perPage = AppModel.groupsPerPage
         let pageCount = max(1, (all.count + perPage - 1) / perPage)
         let page = min(model.page(for: model.tab), pageCount - 1)
         let slice = Array(all[page * perPage ..< min(all.count, (page + 1) * perPage)])
-        return (all, slice, pageCount, page)
+        return (all, kindGroups.count - all.count, slice, pageCount, page)
     }
 
     private var pageChosen: [String] {
-        pagedGroups.slice.filter { model.skipped[$0.sig] == nil }
-            .flatMap { model.selectedPaths($0) }
+        pagedGroups.slice.flatMap { model.selectedPaths($0) }
     }
 
     @ViewBuilder
@@ -219,37 +221,34 @@ struct ContentView: View {
     @ViewBuilder
     private var groupsContent: some View {
         let kind = model.tab.rawValue
-        let all = model.groups.filter { $0.kind == kind }
+        let all = pagedGroups.all
         if all.isEmpty {
-            Text("Здесь пусто. Проверь индекс или открой другую вкладку.")
+            let anyAtAll = model.groups.contains { $0.kind == kind }
+            Text(anyAtAll
+                 ? "Все группы этой вкладки оставлены как есть. Вернуть их можно кнопкой «Вернуть пропущенные» в панели сверху."
+                 : "Здесь пусто. Проверь индекс или открой другую вкладку.")
                 .foregroundStyle(.secondary)
         } else {
             // Страницы по 10 групп: сотни карточек с превью разом едят
             // память, а разбирают архив всё равно по одной группе.
-            let all = pagedGroups.all
             let perPage = AppModel.groupsPerPage
             let pageCount = pagedGroups.pageCount
             let page = pagedGroups.page
             let slice = pagedGroups.slice
-            let live = all.filter { model.skipped[$0.sig] == nil }
-            let total = live.reduce(Int64(0)) { sum, g in
+            let skipped = pagedGroups.skipped
+            let total = all.reduce(Int64(0)) { sum, g in
                 sum + g.files.filter { model.isSelected(g, $0.path) }
                     .reduce(Int64(0)) { $0 + ($1.size ?? 0) }
             }
-            let headline = live.isEmpty
-                ? "Все \(all.count) \(plural(all.count, "группа", "группы", "групп")) оставлены как есть"
-                : "\(live.count) \(plural(live.count, "группа", "группы", "групп")) в работе" +
-                  (all.count > live.count
-                    ? ", ещё \(all.count - live.count) оставлены как есть" : "") +
+            let headline = "\(all.count) \(plural(all.count, "группа", "группы", "групп")) в работе" +
+                  (skipped > 0 ? ", ещё \(skipped) оставлены как есть" : "") +
                   " · отмечено на \(fmtBytes(total))"
             Text(headline + ".")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            if !live.isEmpty {
-                Text("Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить другой кадр, снимите ✓ здесь и поставьте там.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Красная рамка — уедет в карантин, без рамки останется. Чтобы оставить другой кадр, снимите ✓ здесь и поставьте там.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if pageCount > 1 {
                 HStack {
                     Button("←") { model.setPage(model.tab, page - 1) }
@@ -262,12 +261,10 @@ struct ContentView: View {
                     Spacer()
                 }
             }
+            // Пропущенных здесь быть не может: pagedGroups их отфильтровал,
+            // и страница всегда состоит из живых групп.
             ForEach(Array(slice.enumerated()), id: \.element.id) { i, group in
-                if let stamp = model.skipped[group.sig] {
-                    SkippedStrip(group: group, createdAt: stamp ?? nil)
-                } else {
-                    GroupCardView(group: group, index: page * perPage + i)
-                }
+                GroupCardView(group: group, index: page * perPage + i)
             }
             if pageCount > 1 {
                 HStack {
@@ -306,6 +303,29 @@ struct ContentView: View {
 /// 162 (+15% сверх того). Ширина запроса к серверу поднята
 /// пропорционально — иначе на Retina мыло.
 let thumbSide: CGFloat = 162
+
+/// Знак вопроса у параметра: клик открывает поповер с пояснением,
+/// что меняет параметр и куда крутить число.
+struct HintButton: View {
+    let hint: String
+    @State private var shown = false
+
+    var body: some View {
+        Button { shown.toggle() } label: {
+            Image(systemName: "questionmark.circle")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $shown, arrowEdge: .bottom) {
+            Text(hint)
+                .font(.callout)
+                .frame(maxWidth: 320)
+                .padding(12)
+        }
+        .accessibilityLabel("Пояснение: \(hint)")
+        .help("Показать пояснение")
+    }
+}
 
 /// Превью с сервера. AsyncImage сам кеширует, токен — в адресе.
 struct ThumbView: View {
