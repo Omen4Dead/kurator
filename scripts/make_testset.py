@@ -19,22 +19,26 @@ import shutil
 import sys
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 W, H = 900, 600
 
-PALETTE = [
-    (198, 63, 74),
-    (72, 129, 165),
-    (108, 168, 118),
-    (211, 176, 84),
-    (147, 106, 178),
-    (86, 82, 74),
-    (222, 222, 218),
-    (54, 58, 66),
-    (18, 22, 30),
-    (240, 240, 232),
-]
+
+def _palette(crng: random.Random) -> list[tuple[int, int, int]]:
+    """Палитра сцены — случайная точка в цветовом объёме.
+
+    Раньше все сцены делили фиксированные 10 цветов, и разные сцены
+    одного стиля оказывались для эмбеддинга почти неотличимы (cosine
+    до 1.000 у чужих пар — измерено probe_verifier.py на 1.13): эталон
+    требовал от скоринга разделить то, что визуально не разделимо.
+    Живые архивы разнообразнее: два разных снимка не собраны из одной
+    коробки с десятью красками. См. ROADMAP 1.11.
+    """
+    return [
+        (crng.randint(15, 240), crng.randint(15, 240), crng.randint(15, 240))
+        for _ in range(crng.randint(4, 9))
+    ]
 
 
 def _rect(draw, lrng, crng, palette, alpha=(110, 235)):
@@ -237,13 +241,22 @@ def scene(seed: int, style_index: int, layout_seed: int | None = None) -> Image.
     """
     lrng = random.Random(seed if layout_seed is None else layout_seed)
     crng = random.Random(seed)
-    palette = crng.sample(PALETTE, crng.randint(3, len(PALETTE)))
+    palette = _palette(crng)
     img = STYLES[style_index % len(STYLES)](lrng, crng, palette)
     img = img.rotate(lrng.uniform(-8, 8), resample=Image.BICUBIC, expand=False, fillcolor=palette[0])
     img = ImageEnhance.Color(img).enhance(crng.uniform(0.55, 1.45))
     img = ImageEnhance.Brightness(img).enhance(crng.uniform(0.65, 1.3))
     img = ImageEnhance.Contrast(img).enhance(crng.uniform(0.7, 1.35))
     img = img.filter(ImageFilter.GaussianBlur(lrng.uniform(0.0, 0.7)))
+    # Мелкозернистый шум: у реальных снимков есть сенсорное зерно и
+    # текстуры, а без него плоские синтетические сцены одного стиля
+    # неотличимы ни для эмбеддинга, ни для глаз — эталон требовал от
+    # скоринга разделить то, что различимо не бывает (см. ROADMAP 1.11).
+    # Шум детерминирован от seed: деформации сохраняют поле шума, так что
+    # истинные дубли его не теряют.
+    noise = np.random.default_rng(seed).normal(0.0, 7.0, (H, W, 1))
+    arr = np.asarray(img).astype(np.float32) + noise
+    img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
     draw = ImageDraw.Draw(img)
     draw.text((16, H - 32), f"#{seed}", fill=(255, 255, 255, 190))
     return img

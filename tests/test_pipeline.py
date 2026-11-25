@@ -1,3 +1,4 @@
+import math
 import os
 import shutil
 import subprocess
@@ -58,10 +59,11 @@ def test_pipeline_matches_ground_truth(tmp_path):
 
     # Near делится на два класса (ROADMAP 1.11): обычные — ресайз и
     # пережатие, их пропускать нельзя никогда; деформированные — поворот,
-    # кроп, рамка, скриншот, которые каскад pHash → cosine сегодня не видит
-    # вообще. Для деформированных бюджет пропуска — храповик: эталон
-    # 2026-11-25 пропускает все, 1.12–1.14 обязаны срезать, и тогда число
-    # ниже правится вниз.
+    # кроп, рамка, скриншот. Второй ярус (1.13) вернул большинство
+    # деформированных через верификатор содержимого: на эталоне 180 сцен
+    # фактически пропущено 5 из 28 (0.18 — в основном кропы и скриншоты
+    # с корреляцией ниже порога). Бюджет — храповик: правка, которая
+    # поднимает число выше измеренного, обязана объясниться цифрами.
     from kurator.dedupe import BURST as _BURST
     from kurator.dedupe import EXACT as _EXACT
     from kurator.dedupe import analyze as _analyze
@@ -81,11 +83,14 @@ def test_pipeline_matches_ground_truth(tmp_path):
         f"пропущены обычные near-дубли (ресайз/пережатие): {sorted(missed_plain)[:3]}"
     )
     missed_deformed = deformed_pairs - found_pairs
-    deformed_miss_fraction = len(missed_deformed) / max(1, len(deformed_pairs))
-    assert deformed_miss_fraction <= 1.0, (
+    # На малом наборе (40 сцен, ~4 деформированные пары) дробление грубое:
+    # одна потерянная пара — уже 0.25, поэтому потолок берём с запасом,
+    # а эталон держит точное число в ROADMAP.
+    deformed_miss_budget = max(1, math.ceil(len(deformed_pairs) * 0.18))
+    assert len(missed_deformed) <= deformed_miss_budget, (
         f"деформированные дубли: пропущено {len(missed_deformed)} из "
-        f"{len(deformed_pairs)} — бюджет 1.0 зафиксирован эталоном 2026-11-25, "
-        "см. ROADMAP 1.12–1.14"
+        f"{len(deformed_pairs)}, бюджет {deformed_miss_budget} (эталон "
+        "2026-11-26: 0.18, см. ROADMAP 1.13–1.14)"
     )
 
     from kurator.config import NEAR_DUP_PHASH_DISTANCE

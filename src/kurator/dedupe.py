@@ -15,6 +15,8 @@ from .config import (
     NEAR_DUP_COSINE_STRONG,
     NEAR_DUP_COSINE_WEAK,
     NEAR_DUP_PHASH_DISTANCE,
+    NEAR_TIER2_COSINE,
+    NEAR_TIER2_PHASH,
 )
 from .db import Photo, Store
 from .hashing import hamming_many
@@ -74,19 +76,32 @@ def near_groups(
     store: Store | None = None,
     strong_cosine: float = NEAR_DUP_COSINE_STRONG,
     weak_cosine: float = NEAR_DUP_COSINE_WEAK,
+    tier2_phash: int = NEAR_TIER2_PHASH,
+    tier2_cosine: float = NEAR_TIER2_COSINE,
 ) -> list[Group]:
+    """Пары near-дублей двумя ярусами (1.13).
+
+    Ярус 1 — pHash ≤ distance: квалификация косинусом, как раньше.
+    Ярус 2 — distance < pHash ≤ tier2_phash: кандидаты на верификацию
+    содержимого (verify.py): косинус выше tier2_cosine плюс попиксельное
+    совпадение после выравнивания. Эмбеддинг уверенно говорит «похожи»,
+    но не отличает деформированный снимок от чужой сцены с той же
+    композицией — этим занимается верификатор.
+    """
     candidates = [p for p in photos if p.phash]
     if len(candidates) < 2:
         return []
     hashes = _phash_array(candidates)
     paths = [p.rel_path for p in candidates]
-    index = {p.rel_path: p for p in candidates}
 
-    pairs: list[tuple[int, int, int]] = []
+    # Оба яруса собираются в одном проходе: расстояния считаются один раз,
+    # пик памяти как у прежнего фильтра (ROADMAP 2.6).
+    tier1: list[tuple[int, int, int]] = []
+    tier2: list[tuple[int, int, int]] = []
     for start in range(0, len(candidates), PAIR_CHUNK):
         block = hashes[start : start + PAIR_CHUNK]
         dist = hamming_many(block[:, None], hashes[None, :])
-        rows, cols = np.nonzero(dist <= distance)
+        rows, cols = np.nonzero(dist <= tier2_phash)
         for r, c in zip(rows.tolist(), cols.tolist()):
             i = start + r
             j = c
@@ -95,7 +110,11 @@ def near_groups(
             left, right = candidates[i], candidates[j]
             if left.md5 and left.md5 == right.md5:
                 continue
-            pairs.append((i, j, int(dist[r, c])))
+            entry = (i, j, int(dist[r, c]))
+            if dist[r, c] <= distance:
+                tier1.append(entry)
+            else:
+                tier2.append(entry)
 
     vectors = None
     positions: dict[str, int] = {}
@@ -106,28 +125,66 @@ def near_groups(
         else:
             vectors = None
 
+    def _cosine(a: str, b: str) -> float | None:
+        if vectors is None or a not in positions or b not in positions:
+            return None
+        return float(np.dot(vectors[positions[a]], vectors[positions[b]]))
+
     groups: list[Group] = []
     used: set[str] = set()
-    for i, j, dist in sorted(pairs, key=lambda t: t[2]):
+
+    def _free(a: str, b: str) -> bool:
+        """True, если хотя бы один член ещё не занят жадной покраской."""
+        return not (a in used and b in used)
+
+    for i, j, dist in sorted(tier1, key=lambda t: t[2]):
         a, b = paths[i], paths[j]
-        if a in used and b in used:
+        if not _free(a, b):
             continue
-        cosine = None
-        if vectors is not None and a in positions and b in positions:
-            cosine = float(np.dot(vectors[positions[a]], vectors[positions[b]]))
+        cosine = _cosine(a, b)
         if cosine is not None:
             kind = NEAR_STRONG if cosine >= strong_cosine else NEAR_WEAK
             if kind == NEAR_WEAK and cosine < weak_cosine:
                 continue
         else:
             kind = NEAR_STRONG
-        group = Group(
-            kind=kind,
-            members=sorted([a, b]),
-            detail={"phash_distance": dist, "cosine": cosine},
-        )
-        groups.append(group)
         used.update([a, b])
+        groups.append(
+            Group(
+                kind=kind,
+                members=sorted([a, b]),
+                detail={"phash_distance": dist, "cosine": cosine},
+            )
+        )
+
+    # Ярус 2: сначала косинус (дешево, без чтения картинок), потом
+    # верификация содержимого. Без store корня нет — пропускаем ярус.
+    tier2_scored: list[tuple[float, int, int, int]] = []
+    for i, j, dist in tier2:
+        a, b = paths[i], paths[j]
+        cosine = _cosine(a, b)
+        if cosine is None or cosine < tier2_cosine:
+            continue
+        tier2_scored.append((cosine, i, j, dist))
+
+    if tier2_scored and store is not None:
+        from .verify import pair_match
+
+        root = store.root
+        for cosine, i, j, dist in sorted(tier2_scored, reverse=True):
+            a, b = paths[i], paths[j]
+            if not _free(a, b):
+                continue
+            if not pair_match(root, a, b):
+                continue
+            used.update([a, b])
+            groups.append(
+                Group(
+                    kind=NEAR_STRONG,
+                    members=sorted([a, b]),
+                    detail={"phash_distance": dist, "cosine": cosine, "verified": True},
+                )
+            )
     return groups
 
 
