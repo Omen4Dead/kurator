@@ -1,7 +1,8 @@
 """Генератор синтетического фотобанка для проверки пайплайна kurator.
 
 Намеренно грязный набор: точные дубликаты, near-dupes с разным качеством
-JPEG и ресайзом, burst-серии с суффиксами (N), разные по виду сцены и мусор
+JPEG и ресайзом, поворотами в редакторе, кропами, рамками и «скриншотами»,
+burst-серии с суффиксами (N), разные по виду сцены и мусор
 (не-изображения, скрытые файлы, видео-плейсхолдер, EXIF-файлы без метаданных).
 
     python scripts/make_testset.py /tmp/kurator-test 180
@@ -298,6 +299,20 @@ def build(out: Path, scenes: int) -> dict:
         }
         counts["сцен"] += 1
 
+    def record_near(target: Path, source: Path, seed: int, style: int,
+                    suffix_note: str | None = None) -> None:
+        entry = {
+            "rel": str(target.relative_to(out)),
+            "scene": seed,
+            "style": STYLES[style].__name__,
+            "kind": "near-dup",
+            "derived_from": source.name,
+        }
+        if suffix_note:
+            entry["deform"] = suffix_note
+        truth[target.name] = entry
+        counts["near-дубли"] += 1
+
     for source, seed, style, moment in originals:
         roll = rng.random()
         folder = source.parent
@@ -323,15 +338,63 @@ def build(out: Path, scenes: int) -> dict:
             write(target, resized, moment + dt.timedelta(minutes=6), exif=False,
                   quality=rng.choice([38, 52, 66, 80]))
             img.close()
-            truth[target.name] = {
-                "rel": str(target.relative_to(out)),
-                "scene": seed,
-                "style": STYLES[style].__name__,
-                "kind": "near-dup",
-                "derived_from": source.name,
-            }
-            counts["near-дубли"] += 1
+            record_near(target, source, seed, style)
+        elif roll < 0.175:
+            # Поворот в редакторе: без EXIF, размеры меняются местами
+            # у 90/270. pHash такой кадр не узнаёт (см. ROADMAP 1.12).
+            img = Image.open(source)
+            angle = rng.choice([90, 180, 270])
+            rotated = img.rotate(angle, expand=True)
+            target = folder / f"{source.stem}_rot.jpg"
+            write(target, rotated, moment + dt.timedelta(minutes=7), exif=False,
+                  quality=rng.randint(80, 92))
+            img.close()
+            record_near(target, source, seed, style, f"rotate:{angle}")
         elif roll < 0.21:
+            # Кроп: случайные 10–30% сняты с краёв, размер как получился.
+            img = Image.open(source)
+            dx = rng.randint(int(W * 0.05), int(W * 0.15))
+            dy = rng.randint(int(H * 0.05), int(H * 0.15))
+            cropped = img.crop((dx, dy, W - rng.randint(0, dx), H - rng.randint(0, dy)))
+            target = folder / f"{source.stem}_crop.jpg"
+            write(target, cropped, moment + dt.timedelta(minutes=8), exif=False,
+                  quality=rng.randint(80, 92))
+            img.close()
+            record_near(target, source, seed, style, "crop")
+        elif roll < 0.245:
+            # Рамка: белая кайма по краям, кадр внутри неё.
+            img = Image.open(source)
+            border = rng.randint(int(min(W, H) * 0.05), int(min(W, H) * 0.09))
+            framed = Image.new("RGB", (img.width + border * 2, img.height + border * 2),
+                               (245, 245, 242))
+            framed.paste(img, (border, border))
+            target = folder / f"{source.stem}_frame.jpg"
+            write(target, framed, moment + dt.timedelta(minutes=10), exif=False,
+                  quality=rng.randint(85, 93))
+            img.close()
+            record_near(target, source, seed, style, "frame")
+        elif roll < 0.28:
+            # «Скриншот»: даунскейл, апскейл обратно (мытьё), полосы
+            # интерфейса сверху и снизу. Имитация пересохранённого
+            # скриншота мессенджера.
+            img = Image.open(source)
+            small = img.resize((int(W * 0.45), int(H * 0.45)), Image.BILINEAR)
+            shot = small.resize((W, H), Image.BICUBIC)
+            bar = rng.randint(28, 54)
+            canvas = Image.new("RGB", (W, H + bar * 2), (24, 26, 30))
+            canvas.paste(shot, (0, bar))
+            draw_shot = ImageDraw.Draw(canvas)
+            draw_shot.rectangle([0, 0, W, bar], fill=(24, 26, 30))
+            draw_shot.rectangle([0, H + bar, W, H + bar * 2], fill=(36, 38, 44))
+            draw_shot.rounded_rectangle([W // 2 - 70, H + bar + bar // 2 - 14,
+                                         W // 2 + 70, H + bar + bar // 2 + 14],
+                                        radius=14, fill=(90, 94, 104))
+            target = folder / f"{source.stem}_shot.jpg"
+            write(target, canvas, moment + dt.timedelta(minutes=12), exif=False,
+                  quality=rng.randint(85, 92))
+            img.close()
+            record_near(target, source, seed, style, "screenshot")
+        elif roll < 0.35:
             frames = rng.randint(2, 4)
             for frame in range(frames):
                 frame_rng = random.Random(seed * 1000 + frame)
