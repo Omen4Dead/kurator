@@ -86,11 +86,11 @@ def test_pipeline_matches_ground_truth(tmp_path):
     # На малом наборе (40 сцен, ~4 деформированные пары) дробление грубое:
     # одна потерянная пара — уже 0.25, поэтому потолок берём с запасом,
     # а эталон держит точное число в ROADMAP.
-    deformed_miss_budget = max(1, math.ceil(len(deformed_pairs) * 0.18))
+    deformed_miss_budget = max(1, math.ceil(len(deformed_pairs) * 0.08))
     assert len(missed_deformed) <= deformed_miss_budget, (
         f"деформированные дубли: пропущено {len(missed_deformed)} из "
         f"{len(deformed_pairs)}, бюджет {deformed_miss_budget} (эталон "
-        "2026-11-26: 0.18, см. ROADMAP 1.13–1.14)"
+        "2026-11-26: 0.08, см. ROADMAP 1.13–1.14)"
     )
 
     from kurator.config import NEAR_DUP_PHASH_DISTANCE
